@@ -1,0 +1,25 @@
+{
+  "_nota": "Configuración del banco de pruebas. Puedes cambiar los modelos o los documentos a resumir.",
+  "modelos_ollama": ["llama3.2:3b", "llama3.1:8b"],
+  "documentos_resumen": [
+    "prueba_01.pdf", "prueba_02.pdf", "prueba_03.pdf", "prueba_04.pdf", "prueba_05.pdf",
+    "prueba_06.pdf", "prueba_07.pdf", "prueba_08.pdf", "prueba_09.pdf", "prueba_10.pdf"
+  ],
+  "modelo_embeddings": "Xenova/multilingual-e5-small",
+  "categorias": [
+    { "nombre": "Contratos", "descripcion": "contratos y acuerdos firmados entre partes: alquiler, servicios, confidencialidad" },
+    { "nombre": "Facturas", "descripcion": "facturas, recibos y comprobantes de compra o pago" },
+    { "nombre": "Poderes", "descripcion": "poderes notariales para que otra persona actúe en nombre de alguien" },
+    { "nombre": "Banco", "descripcion": "estados de cuenta y documentos del banco" },
+    { "nombre": "Laboral", "descripcion": "empleados: contratos de trabajo, cartas de oferta y de terminación" },
+    { "nombre": "Seguros", "descripcion": "pólizas, certificados de seguro y garantías" },
+    { "nombre": "Impuestos", "descripcion": "declaraciones de impuestos y acuses de la DGII" },
+    { "nombre": "Identidad y licencias", "descripcion": "licencias, registros mercantiles, cédulas y permisos" }
+  ],
+  "ocr": { "escala_pdf": 3, "minimo_caracteres_pdf": 40 },
+  "duplicados": { "umbral_parecido": 0.5, "umbral_casi_identico": 0.9 },
+  "indice": {
+    "total_documentos": 1000,
+    "consultas_extra": ["vence 2027", "Bufete Ejemplo", "power of attorney", "credito fiscal", "Harbor Example Accounting", "RD$ 65,000.00"]
+  }
+}

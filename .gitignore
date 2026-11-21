@@ -1,0 +1,6 @@
+node_modules/
+bench/datos/*
+!bench/datos/LEEME.md
+bench/modelos/
+bench/.navegador/
+.DS_Store

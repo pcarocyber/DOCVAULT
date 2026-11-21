@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calificar resúmenes</title>
+<style>
+:root{--fg:#1d1d1f;--bg:#fff;--muted:#f4f4f6;--line:#ddd;--acc:#2f5bd3}
+@media (prefers-color-scheme: dark){:root{--fg:#eee;--bg:#161618;--muted:#232326;--line:#3a3a3d;--acc:#7c9cff}}
+body{font:15px/1.5 system-ui,-apple-system,sans-serif;color:var(--fg);background:var(--bg);max-width:1200px;margin:0 auto;padding:20px 16px}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media (max-width:800px){.cols{grid-template-columns:1fr}}
+pre{white-space:pre-wrap;background:var(--muted);border:1px solid var(--line);border-radius:8px;padding:12px;max-height:60vh;overflow:auto;font:13px/1.45 ui-monospace,Menlo,monospace}
+.notas{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+button{font:inherit;padding:10px 16px;border-radius:8px;border:1px solid var(--line);background:var(--muted);color:var(--fg);cursor:pointer}
+button.sel{background:var(--acc);color:#fff;border-color:var(--acc)}
+.guia{color:#777;font-size:14px}.nav{display:flex;gap:8px;align-items:center}
+</style>
+</head>
+<body>
+<h1>Calificar resúmenes</h1>
+<p class="guia">Lee el documento y el resumen. Pon una nota de 1 a 5 pensando en si te serviría en el trabajo: 1 = inútil o con datos inventados, 3 = aceptable, 5 = excelente. No se muestra qué modelo lo escribió.</p>
+<div id="app">Cargando…</div>
+<script type="module">
+const app = document.getElementById("app");
+const { items, notas } = await (await fetch("/api/resumenes")).json();
+let i = Math.max(0, items.findIndex((x) => !(x.id in notas)));
+if (i === -1) i = 0;
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+function pintar() {
+  const hechas = items.filter((x) => x.id in notas).length;
+  if (hechas === items.length) {
+    app.innerHTML = `<p><b>¡Listo! Calificaste los ${items.length} resúmenes.</b> El informe ya está actualizado.</p>
+      <p><a href="/informe" target="_blank">Ver el informe</a> · <button id="fin">Terminar y cerrar</button> · <button id="rev">Revisar notas</button></p>`;
+    document.getElementById("fin").onclick = async () => { await fetch("/api/terminar", { method: "POST" }); app.innerHTML = "<p>Ya puedes cerrar esta pestaña.</p>"; };
+    document.getElementById("rev").onclick = () => { i = 0; pintarItem(); };
+    return;
+  }
+  pintarItem();
+}
+function pintarItem() {
+  const x = items[i];
+  const hechas = items.filter((y) => y.id in notas).length;
+  app.innerHTML = `
+    <div class="nav"><b>Resumen ${i + 1} de ${items.length}</b> <span class="guia">(${hechas} calificados)</span>
+      <button id="ant">Anterior</button><button id="sig">Siguiente</button></div>
+    <div class="cols">
+      <div><h3>Documento: ${esc(x.archivo)}</h3><pre>${esc(x.documento)}</pre></div>
+      <div><h3>Resumen</h3><pre>${esc(x.resumen)}</pre></div>
+    </div>
+    <div class="notas">${[1,2,3,4,5].map((n) => `<button data-n="${n}" class="${notas[x.id] === n ? "sel" : ""}">${n}</button>`).join("")}</div>`;
+  app.querySelectorAll("[data-n]").forEach((b) => b.onclick = async () => {
+    const nota = Number(b.dataset.n);
+    notas[x.id] = nota;
+    await fetch("/api/calificar", { method: "POST", body: JSON.stringify({ id: x.id, nota }) });
+    const siguiente = items.findIndex((y, k) => k > i && !(y.id in notas));
+    const primera = items.findIndex((y) => !(y.id in notas));
+    i = siguiente !== -1 ? siguiente : primera !== -1 ? primera : i;
+    pintar();
+  });
+  document.getElementById("ant").onclick = () => { i = (i - 1 + items.length) % items.length; pintarItem(); };
+  document.getElementById("sig").onclick = () => { i = (i + 1) % items.length; pintarItem(); };
+}
+pintar();
+</script>
+</body>
+</html>
