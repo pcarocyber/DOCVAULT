@@ -4,7 +4,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { BENCH, RESULTADOS, carpetaDatos, leerJson, asegurarCarpeta, MODELOS_LOCALES } from "./lib/rutas";
+import { BENCH, RESULTADOS, prepararDatos, leerJson, asegurarCarpeta, MODELOS_LOCALES } from "./lib/rutas";
 import { iniciarServidor, pluginMotores } from "./lib/servidor";
 import { abrirNavegador } from "./lib/navegador";
 import { medirOllama } from "./pruebas/resumen";
@@ -20,9 +20,9 @@ const visible = process.argv.includes("--visible");
 
 async function main() {
   const t0 = Date.now();
-  const datos = carpetaDatos();
+  const datos = prepararDatos();
   if (!datos) {
-    console.error("\nNo encuentro los documentos de prueba.\nDescomprime documentos-prueba.zip dentro de la carpeta bench/datos y vuelve a intentar.\n(o ejecuta npm run preparar, que lo hace solo si el zip está en bench/datos)\n");
+    console.error("\nNo encuentro los documentos de prueba.\nPon documentos-prueba.zip dentro de la carpeta bench/datos y vuelve a intentar.\n");
     process.exit(1);
   }
   const config = leerJson<Config>(join(BENCH, "config.json"));

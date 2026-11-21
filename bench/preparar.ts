@@ -3,10 +3,9 @@
  * Revisa que todo esté listo y descarga lo que falte:
  * documentos de prueba, navegador y modelos de Ollama.
  */
-import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
-import { BENCH, carpetaDatos, leerJson } from "./lib/rutas";
+import { BENCH, prepararDatos, leerJson } from "./lib/rutas";
 import { abrirNavegador } from "./lib/navegador";
 import { URL_OLLAMA, modelosInstalados, estaInstalado } from "./pruebas/resumen";
 import type { Config } from "./lib/tipos";
@@ -23,18 +22,7 @@ if (mayor >= 20) ok(`Node.js ${process.versions.node}`);
 else { falta(`Node.js ${process.versions.node} es viejo: instala la versión 20 o más nueva desde nodejs.org`); todoListo = false; }
 
 // 2. Documentos de prueba
-let datos = carpetaDatos();
-if (!datos) {
-  const dirDatos = join(BENCH, "datos");
-  const zip = readdirSync(dirDatos).find((f) => f.toLowerCase().endsWith(".zip"));
-  if (zip) {
-    console.log(`  Descomprimiendo ${zip}…`);
-    execSync(process.platform === "win32"
-      ? `powershell -NoProfile -Command "Expand-Archive -Force '${join(dirDatos, zip)}' '${dirDatos}'"`
-      : `unzip -oq "${join(dirDatos, zip)}" -d "${dirDatos}"`);
-    datos = carpetaDatos();
-  }
-}
+const datos = prepararDatos();
 if (datos) ok(`Documentos de prueba en ${datos}`);
 else { falta("Documentos de prueba: copia documentos-prueba.zip dentro de bench/datos y vuelve a ejecutar npm run preparar"); todoListo = false; }
 
