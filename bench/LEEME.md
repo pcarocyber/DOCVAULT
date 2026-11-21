@@ -112,10 +112,10 @@ cambiar sin tocar el código.
   correctas del plan se mide sobre esos; el resto se informa aparte.
 - **Modelos de Ollama**: `llama3.2:3b` como modelo de 3B y `llama3.1:8b` como
   modelo de 8B. Se pueden cambiar en `config.json`.
-- **Sugerencia de carpeta**: la decisión se toma con el modo "solo nombre",
-  que es lo que hace un usuario al crear una carpeta. Si prefieres pedir una
-  descripción corta al crear cada carpeta, cambia `modo_para_decidir` a
-  `nombre_y_descripcion` en `umbrales.json`.
+- **Sugerencia de carpeta**: al crear una carpeta, el usuario escribe también una
+  descripción corta (decisión de Pedro, 21 de noviembre de 2026). Por eso la
+  decisión se toma con el modo "nombre y descripción". El modo "solo nombre"
+  se sigue informando para comparar.
 - **Tiempo por página del OCR**: no incluye la carga inicial del OCR, que se
   informa aparte. En los PDF escaneados sí incluye convertir la página en imagen.
 - **Índice**: en la fase 0 la base de datos vive en memoria. Guardarla en el

@@ -1,7 +1,7 @@
 {
   "_nota": "Umbrales del plan técnico (Cómo arrancar la fase 0). Son propuesta y se pueden ajustar.",
   "ocr": { "segundos_por_pagina_max": 10, "palabras_correctas_min": 0.9, "defectos_limpios": ["limpio", "buena luz"] },
-  "carpeta": { "acierto_min": 0.8, "modo_para_decidir": "solo_nombre" },
+  "carpeta": { "acierto_min": 0.8, "modo_para_decidir": "nombre_y_descripcion" },
   "resumen": { "segundos_max": 60, "calidad_min": 3, "modelo_pequeno": "llama3.2:3b" },
   "fechas": { "acierto_min": 0.9 },
   "duplicados": { "falsos_positivos_max": 0 },
