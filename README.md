@@ -3,7 +3,7 @@
 Bóveda de documentos gratuita que corre en el navegador (Chrome y Edge) y
 organiza una carpeta local del usuario. Todo es local por defecto, incluida la IA.
 
-Estado: **fase 0** (prueba de riesgos). Todavía no hay app; hay un banco de
+Estado: **fase 0 terminada** (ver docs/decisiones/0004). Todavía no hay app; hay un banco de
 pruebas que mide OCR, IA local, fechas, duplicados y búsqueda en un equipo real.
 
 **Para correr el banco de pruebas, sigue [bench/LEEME.md](bench/LEEME.md).**

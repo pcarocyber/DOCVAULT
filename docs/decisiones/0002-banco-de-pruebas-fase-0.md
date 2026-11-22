@@ -1,6 +1,6 @@
 # 0002 · Cómo mide el banco de pruebas de la fase 0
 
-Fecha: 21 de noviembre de 2026 · Estado: propuesta, en revisión
+Fecha: 21 de noviembre de 2026 · Estado: aprobada por el dueño
 
 **Decisión.** El banco abre Chrome con Playwright en el equipo del dueño y corre
 el código real de `packages/core` y `packages/indice` sobre los 30 documentos de
