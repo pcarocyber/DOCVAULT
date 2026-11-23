@@ -33,6 +33,7 @@
     "@sqlite.org/sqlite-wasm": "^3.50.4-build1",
     "@tesseract.js-data/eng": "^1.0.0",
     "@tesseract.js-data/spa": "^1.0.0",
+    "fflate": "^0.8.3",
     "pdfjs-dist": "^4.10.38",
     "tesseract.js": "^5.1.1"
   }

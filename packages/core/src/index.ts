@@ -5,3 +5,4 @@ export * from "./fechas";
 export * from "./duplicados";
 export * from "./carpeta";
 export * from "./resumen";
+export * from "./oficina";

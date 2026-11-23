@@ -12,5 +12,5 @@
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["packages/*/src", "bench/**/*.ts", "packages/*/test"]
+  "include": ["packages/*/src", "bench/**/*.ts", "packages/*/test", "apps/web/motores.ts", "apps/web/vite.config.ts"]
 }
