@@ -1,35 +1,106 @@
 /**
  * Índice local: SQLite en WebAssembly con FTS5 (búsqueda por palabras).
- * En la fase 0 corre en memoria; en la fase 1 se guardará en OPFS.
+ * La base vive en memoria mientras la app está abierta y se guarda como un
+ * archivo (bytes) en el almacenamiento privado del navegador (OPFS).
+ * Siempre se puede reconstruir leyendo la carpeta del usuario.
  */
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
 
-export interface DocIndice { id: string; titulo: string; texto: string; carpeta?: string }
+export interface DocIndice {
+  id: string;            // en la app: la ruta relativa dentro de la carpeta
+  titulo: string;
+  texto: string;
+  carpeta?: string;
+  ruta?: string;
+  tamano?: number;
+  modificado?: number;   // milisegundos desde 1970
+  tipo?: string;         // extensión en minúsculas: pdf, jpg, docx…
+  estadoTexto?: EstadoTexto;
+}
+
+/** Cómo se obtuvo el texto del documento. */
+export type EstadoTexto = "listo" | "sin texto" | "pendiente de OCR" | "formato no soportado" | "error";
+
+export interface FichaDocumento {
+  id: string; titulo: string; carpeta: string | null; ruta: string | null; tamano: number | null;
+  modificado: number | null; tipo: string | null; estadoTexto: EstadoTexto | null;
+}
+
+/** `fragmento` marca las palabras halladas entre los caracteres \u0002 y \u0003. */
 export interface Hallazgo { id: string; titulo: string; fragmento: string; puntaje: number }
 
+const VERSION_ESQUEMA = 2;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Sqlite = any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = any;
 
-export class Indice {
-  private constructor(private db: Db) {}
+let modulo: Promise<Sqlite> | null = null;
+function cargarSqlite(): Promise<Sqlite> {
+  modulo ??= sqlite3InitModule({ print: () => {}, printErr: () => {} });
+  return modulo;
+}
 
-  static async abrir(): Promise<Indice> {
-    const sqlite3 = await sqlite3InitModule({ print: () => {}, printErr: () => {} });
+function crearEsquema(db: Db) {
+  db.exec(`
+    DROP TABLE IF EXISTS documentos;
+    DROP TABLE IF EXISTS busqueda;
+    CREATE TABLE documentos (
+      id TEXT PRIMARY KEY, titulo TEXT, carpeta TEXT, ruta TEXT,
+      tamano INTEGER, modificado INTEGER, tipo TEXT, estado_texto TEXT
+    );
+    CREATE VIRTUAL TABLE busqueda USING fts5(
+      id UNINDEXED, titulo, texto, tokenize = 'unicode61 remove_diacritics 2'
+    );
+    PRAGMA user_version = ${VERSION_ESQUEMA};
+  `);
+}
+
+export class Indice {
+  private constructor(private sqlite: Sqlite, private db: Db) {}
+
+  /**
+   * Abre un índice vacío, o uno guardado antes (los bytes de `exportar()`).
+   * Si los bytes están dañados o son de otra versión, empieza vacío.
+   */
+  static async abrir(guardado?: Uint8Array | null): Promise<Indice> {
+    const sqlite3 = await cargarSqlite();
+    if (guardado && guardado.byteLength > 0) {
+      try {
+        const db = new sqlite3.oo1.DB(":memory:", "c");
+        const p = sqlite3.wasm.allocFromTypedArray(guardado);
+        const rc = sqlite3.capi.sqlite3_deserialize(
+          db.pointer, "main", p, guardado.byteLength, guardado.byteLength,
+          sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE | sqlite3.capi.SQLITE_DESERIALIZE_RESIZEABLE,
+        );
+        db.checkRc(rc);
+        if (db.selectValue("PRAGMA user_version") === VERSION_ESQUEMA) return new Indice(sqlite3, db);
+        db.close();
+      } catch {
+        // índice dañado: se reconstruye desde la carpeta
+      }
+    }
     const db = new sqlite3.oo1.DB(":memory:", "c");
-    db.exec(`
-      CREATE TABLE documentos (id TEXT PRIMARY KEY, titulo TEXT, carpeta TEXT);
-      CREATE VIRTUAL TABLE busqueda USING fts5(
-        id UNINDEXED, titulo, texto, tokenize = 'unicode61 remove_diacritics 2'
-      );
-    `);
-    return new Indice(db);
+    crearEsquema(db);
+    return new Indice(sqlite3, db);
   }
 
+  /** Los bytes de la base, para guardarlos en OPFS. */
+  exportar(): Uint8Array {
+    return this.sqlite.capi.sqlite3_js_db_export(this.db.pointer) as Uint8Array;
+  }
+
+  /** Agrega o reemplaza documentos (por id). */
   agregar(docs: DocIndice[]): void {
     this.db.exec("BEGIN");
     try {
       for (const d of docs) {
-        this.db.exec({ sql: "INSERT OR REPLACE INTO documentos VALUES (?, ?, ?)", bind: [d.id, d.titulo, d.carpeta ?? null] });
+        this.db.exec({
+          sql: "INSERT OR REPLACE INTO documentos VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          bind: [d.id, d.titulo, d.carpeta ?? null, d.ruta ?? null, d.tamano ?? null, d.modificado ?? null, d.tipo ?? null, d.estadoTexto ?? null],
+        });
+        this.db.exec({ sql: "DELETE FROM busqueda WHERE id = ?", bind: [d.id] });
         this.db.exec({ sql: "INSERT INTO busqueda (id, titulo, texto) VALUES (?, ?, ?)", bind: [d.id, d.titulo, d.texto] });
       }
       this.db.exec("COMMIT");
@@ -37,6 +108,27 @@ export class Indice {
       this.db.exec("ROLLBACK");
       throw e;
     }
+  }
+
+  quitar(ids: string[]): void {
+    this.db.exec("BEGIN");
+    for (const id of ids) {
+      this.db.exec({ sql: "DELETE FROM documentos WHERE id = ?", bind: [id] });
+      this.db.exec({ sql: "DELETE FROM busqueda WHERE id = ?", bind: [id] });
+    }
+    this.db.exec("COMMIT");
+  }
+
+  /** Todos los documentos, ordenados por ruta. */
+  listar(): FichaDocumento[] {
+    const filas: FichaDocumento[] = [];
+    this.db.exec({
+      sql: `SELECT id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto
+            FROM documentos ORDER BY coalesce(ruta, id)`,
+      rowMode: "object",
+      callback: (f: FichaDocumento) => { filas.push({ ...f }); },
+    });
+    return filas;
   }
 
   /** Busca documentos que contienen todas las palabras (sin importar acentos ni mayúsculas). */
@@ -49,7 +141,7 @@ export class Indice {
     if (terminos.length === 0) return [];
     const filas: Hallazgo[] = [];
     this.db.exec({
-      sql: `SELECT id, titulo, snippet(busqueda, 2, '[', ']', '…', 12) AS fragmento, bm25(busqueda) AS puntaje
+      sql: `SELECT id, titulo, snippet(busqueda, -1, char(2), char(3), '…', 14) AS fragmento, bm25(busqueda) AS puntaje
             FROM busqueda WHERE busqueda MATCH ? ORDER BY puntaje LIMIT ?`,
       bind: [terminos.join(" "), limite],
       rowMode: "object",

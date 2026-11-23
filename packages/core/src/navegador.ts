@@ -15,14 +15,20 @@ export interface RutasMotores {
   ortWasm: string;        // carpeta con los .wasm de onnxruntime-web
 }
 
-let rutas: RutasMotores | null = null;
-export function configurarMotores(r: RutasMotores): void {
-  rutas = r;
-  pdfjs.GlobalWorkerOptions.workerSrc = r.pdfWorker;
+let rutas: Partial<RutasMotores> = {};
+/** Indica dónde están los archivos de cada motor. Solo hace falta pasar los que se usan. */
+export function configurarMotores(r: Partial<RutasMotores>): void {
+  rutas = { ...rutas, ...r };
+  if (r.pdfWorker) pdfjs.GlobalWorkerOptions.workerSrc = r.pdfWorker;
 }
 function r(): RutasMotores {
-  if (!rutas) throw new Error("Llama primero a configurarMotores()");
-  return rutas;
+  return new Proxy(rutas as RutasMotores, {
+    get(obj, k: string) {
+      const v = (obj as unknown as Record<string, string | undefined>)[k];
+      if (!v) throw new Error(`Falta configurar la ruta del motor "${k}" con configurarMotores()`);
+      return v;
+    },
+  });
 }
 
 // ---------- PDF ----------
@@ -30,7 +36,7 @@ function r(): RutasMotores {
 export interface TextoPdf { texto: string; paginas: number; segundos: number }
 
 export async function extraerTextoPdf(bytes: Uint8Array): Promise<TextoPdf> {
-  r();
+  void r().pdfWorker;
   const t0 = performance.now();
   const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise;
   const partes: string[] = [];
@@ -53,7 +59,7 @@ export async function extraerTextoPdf(bytes: Uint8Array): Promise<TextoPdf> {
 
 /** Convierte cada página de un PDF escaneado en imagen para pasarla por OCR. */
 export async function pdfAImagenes(bytes: Uint8Array, escala = 3): Promise<Blob[]> {
-  r();
+  void r().pdfWorker;
   const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise;
   const out: Blob[] = [];
   for (let p = 1; p <= pdf.numPages; p++) {
