@@ -33,7 +33,7 @@ describe("Indice", () => {
     const bytes = idx.exportar();
     idx.cerrar();
     const otro = await Indice.abrir(bytes);
-    expect(otro.listar()).toEqual([{ id: "x/y.pdf", titulo: "y.pdf", carpeta: null, ruta: "x/y.pdf", tamano: 10, modificado: 5, tipo: "pdf", estadoTexto: "listo", confianza: null }]);
+    expect(otro.listar()).toEqual([{ id: "x/y.pdf", titulo: "y.pdf", carpeta: null, ruta: "x/y.pdf", tamano: 10, modificado: 5, tipo: "pdf", estadoTexto: "listo", confianza: null, codigo: null }]);
     expect(otro.buscar("poliza").map((h) => h.id)).toEqual(["x/y.pdf"]);
   });
 
@@ -67,10 +67,28 @@ describe("Indice", () => {
     const bytes = sqlite3.capi.sqlite3_js_db_export(db.pointer!) as Uint8Array;
     db.close();
     const idx = await Indice.abrir(bytes);
-    expect(idx.listar()).toEqual([expect.objectContaining({ id: "a.pdf", estadoTexto: "listo", confianza: null })]);
+    expect(idx.listar()).toEqual([expect.objectContaining({ id: "a.pdf", estadoTexto: "listo", confianza: null, codigo: null })]);
     expect(idx.buscar("alquiler").map((h) => h.id)).toEqual(["a.pdf"]);
     const otra = await Indice.abrir(idx.exportar());
     expect(otra.contar()).toBe(1);
+    idx.cerrar(); otra.cerrar();
+  });
+});
+
+describe("Indice: códigos", () => {
+  it("guarda el código, lo conserva al releer el documento y lo busca", async () => {
+    const idx = await Indice.abrir();
+    idx.agregar([{ id: "a.pdf", titulo: "a.pdf", texto: "uno", codigo: "DV-000001" }, { id: "b.pdf", titulo: "b.pdf", texto: "dos" }]);
+    idx.agregar([{ id: "a.pdf", titulo: "a.pdf", texto: "uno cambiado" }]); // sin código: conserva el que tenía
+    expect(idx.porCodigo("DV-000001")?.id).toBe("a.pdf");
+    idx.ponerCodigos(new Map([["b.pdf", "DV-000002"]]));
+    expect(idx.listar().map((d) => d.codigo)).toEqual(["DV-000001", "DV-000002"]);
+    expect(() => idx.ponerCodigos(new Map([["b.pdf", "DV-000001"]]))).toThrow();
+    expect(idx.porCodigo("DV-000002")?.id).toBe("b.pdf");
+    idx.ponerAjuste("siguiente_codigo", "3");
+    const otra = await Indice.abrir(idx.exportar());
+    expect(otra.ajuste("siguiente_codigo")).toBe("3");
+    expect(otra.porCodigo("DV-000001")?.id).toBe("a.pdf");
     idx.cerrar(); otra.cerrar();
   });
 });

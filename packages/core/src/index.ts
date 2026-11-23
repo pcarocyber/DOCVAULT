@@ -6,3 +6,4 @@ export * from "./duplicados";
 export * from "./carpeta";
 export * from "./resumen";
 export * from "./oficina";
+export * from "./codigos";

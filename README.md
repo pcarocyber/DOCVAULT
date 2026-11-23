@@ -24,6 +24,15 @@ se buscan solo por nombre.
    **Subir archivos** (o arrastrarlos a la ventana) lee cada archivo, te sugiere la carpeta y
    los copia ahí cuando pulsas Guardar. La primera vez Chrome te pedirá permiso para escribir
    en tu carpeta. Los originales no se tocan.
+8. Las **carpetas** aparecen como tarjetas. Al abrir una, sus documentos salen en una fila
+   que se desplaza hacia donde mueves el cursor (o en cuadrícula, si lo prefieres). Al pulsar
+   un documento se abre su **ficha**: datos, código QR, código de barras y botones para abrirlo,
+   ver su texto o copiar el código.
+9. Cada documento tiene su **código único** (DV-000123). Escríbelo en el buscador (también vale
+   «dv 123») y pulsa Enter para ir directo a él. Si mueves o renombras el archivo, conserva su
+   código; los números no se reutilizan. Los códigos también se guardan en
+   `.docvault/codigos.json` dentro de tu carpeta.
+10. **Exportar a Excel** descarga la lista de todos los documentos con su código.
 
 El índice se guarda dentro de Chrome, en tu computadora; no sale a internet. Si agregas o
 quitas archivos, pulsa **Actualizar**. Para cerrar la app, pulsa Ctrl+C en la Terminal.

@@ -71,24 +71,38 @@ export async function leerCarpetas(raiz: FileSystemDirectoryHandle): Promise<Car
   return out.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
 }
 
-async function leerDescripciones(raiz: FileSystemDirectoryHandle): Promise<Record<string, string>> {
+/** Lee un archivo JSON de .docvault/ dentro de la carpeta del usuario, o null si no existe. */
+export async function leerAjusteJson<T>(raiz: FileSystemDirectoryHandle, archivo: string): Promise<T | null> {
   try {
     const dir = await raiz.getDirectoryHandle(AJUSTES);
-    const f = await (await dir.getFileHandle(ARCHIVO_CARPETAS)).getFile();
-    const datos = JSON.parse(await f.text()) as { carpetas?: Record<string, string> };
-    return datos.carpetas ?? {};
+    const f = await (await dir.getFileHandle(archivo)).getFile();
+    return JSON.parse(await f.text()) as T;
   } catch {
-    return {};
+    return null;
   }
+}
+
+/** Escribe un archivo JSON en .docvault/. Necesita permiso de escritura. */
+export async function guardarAjusteJson(raiz: FileSystemDirectoryHandle, archivo: string, datos: unknown) {
+  const dir = await raiz.getDirectoryHandle(AJUSTES, { create: true });
+  const w = await (await dir.getFileHandle(archivo, { create: true })).createWritable();
+  await w.write(JSON.stringify(datos, null, 2));
+  await w.close();
+}
+
+/** ¿Ya tenemos permiso de escritura? Solo pregunta, nunca muestra el aviso de Chrome. */
+export async function puedeEscribir(h: FileSystemDirectoryHandle): Promise<boolean> {
+  return (await h.queryPermission({ mode: "readwrite" })) === "granted";
+}
+
+async function leerDescripciones(raiz: FileSystemDirectoryHandle): Promise<Record<string, string>> {
+  return (await leerAjusteJson<{ carpetas?: Record<string, string> }>(raiz, ARCHIVO_CARPETAS))?.carpetas ?? {};
 }
 
 /** Guarda las descripciones en .docvault/carpetas.json, dentro de la propia carpeta del usuario. */
 async function guardarDescripcion(raiz: FileSystemDirectoryHandle, nombre: string, descripcion: string) {
   const carpetas = { ...(await leerDescripciones(raiz)), [nombre]: descripcion.trim() };
-  const dir = await raiz.getDirectoryHandle(AJUSTES, { create: true });
-  const w = await (await dir.getFileHandle(ARCHIVO_CARPETAS, { create: true })).createWritable();
-  await w.write(JSON.stringify({ version: 1, carpetas }, null, 2));
-  await w.close();
+  await guardarAjusteJson(raiz, ARCHIVO_CARPETAS, { version: 1, carpetas });
 }
 
 /** Caracteres que macOS o Windows no aceptan en un nombre de carpeta o archivo. */
