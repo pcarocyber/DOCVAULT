@@ -6,6 +6,7 @@ import {
 } from "./almacen";
 import { archivoPorRuta, elegirCarpeta, navegadorCompatible, pedirPermiso, tienePermiso } from "./carpeta";
 import { actualizarIndice, type Avance, type ResumenIndexado } from "./indexar";
+import { ColaOcr, CONFIANZA_MINIMA, type AvanceOcr, type ResumenOcr } from "./ocr";
 
 type Pantalla = "cargando" | "incompatible" | "sin-carpeta" | "sin-permiso" | "lista";
 
@@ -28,12 +29,42 @@ export function App() {
   const [resumen, setResumen] = useState<ResumenIndexado | null>(null);
   const [error, setError] = useState<string | null>(null);
   const ocupado = useRef(false);
+  const [avanceOcr, setAvanceOcr] = useState<AvanceOcr | null>(null);
+  const [resumenOcr, setResumenOcr] = useState<ResumenOcr | null>(null);
+  const [abierto, setAbierto] = useState<string | null>(null);
+  const cola = useRef<{ cola: ColaOcr; fin: Promise<unknown> } | null>(null);
+
+  /** Detiene el OCR en curso y espera a que suelte el documento que estaba leyendo. */
+  const pararOcr = useCallback(async () => {
+    const c = cola.current;
+    if (!c) return;
+    c.cola.parar();
+    await c.fin;
+  }, []);
+
+  /** Lee con OCR, en segundo plano, las fotos y escaneos que falten. */
+  const empezarOcr = useCallback((h: FileSystemDirectoryHandle) => {
+    const idx = indice.current;
+    if (!idx || cola.current) return;
+    const c = new ColaOcr();
+    const fin = c.correr(
+      h, idx,
+      (a) => { setAvanceOcr(a); setDocs(idx.listar()); },
+      () => guardarIndice(idx.exportar()),
+    ).then((r) => {
+      if (r.leidos + r.errores > 0) setResumenOcr(r);
+      setDocs(idx.listar());
+    }).catch((e) => setError(`El OCR se detuvo: ${String(e)}`))
+      .finally(() => { cola.current = null; setAvanceOcr(null); });
+    cola.current = { cola: c, fin };
+  }, []);
 
   const actualizar = useCallback(async (h: FileSystemDirectoryHandle) => {
     if (!indice.current || ocupado.current) return;
     ocupado.current = true;
     setError(null);
     try {
+      await pararOcr();
       const r = await actualizarIndice(h, indice.current, setAvance);
       await guardarIndice(indice.current.exportar());
       setDocs(indice.current.listar());
@@ -44,9 +75,13 @@ export function App() {
       ocupado.current = false;
       setAvance(null);
     }
-  }, []);
+    empezarOcr(h);
+  }, [pararOcr, empezarOcr]);
 
   const abrir = useCallback(async (h: FileSystemDirectoryHandle, nueva: boolean) => {
+    await pararOcr();
+    setResumenOcr(null);
+    setAbierto(null);
     if (nueva) {
       await borrarIndiceGuardado();
       await recordarCarpeta(h);
@@ -60,7 +95,7 @@ export function App() {
     setConsulta("");
     setPantalla("lista");
     await actualizar(h);
-  }, [actualizar]);
+  }, [actualizar, pararOcr]);
 
   // Al abrir la app: ¿hay una carpeta recordada y sigue el permiso?
   useEffect(() => {
@@ -111,7 +146,10 @@ export function App() {
   const porId = useMemo(() => new Map(docs.map((d) => [d.id, d])), [docs]);
   const cuenta = useMemo(() => {
     const c: Record<string, number> = {};
-    for (const d of docs) c[d.estadoTexto ?? "error"] = (c[d.estadoTexto ?? "error"] ?? 0) + 1;
+    for (const d of docs) {
+      c[d.estadoTexto ?? "error"] = (c[d.estadoTexto ?? "error"] ?? 0) + 1;
+      if (dudoso(d)) c.revisar = (c.revisar ?? 0) + 1;
+    }
     return c;
   }, [docs]);
 
@@ -174,6 +212,21 @@ export function App() {
           Índice al día en {resumen.segundos.toFixed(1)} s: {resumen.nuevos} nuevos, {resumen.actualizados} cambiados, {resumen.quitados} quitados, {resumen.sinCambios} sin cambios.
         </p>
       )}
+      {avanceOcr && (
+        <div className="avance" role="status" aria-label="OCR">
+          Leyendo fotos y escaneos ({avanceOcr.hechos + 1} de {avanceOcr.total}): {avanceOcr.actual}
+          <progress max={avanceOcr.total} value={avanceOcr.hechos} />
+          <span className="nota">Puedes seguir buscando mientras tanto.</span>
+        </div>
+      )}
+      {!avanceOcr && resumenOcr && (
+        <p className="estado" role="status" aria-label="OCR">
+          Fotos y escaneos leídos en {resumenOcr.segundos.toFixed(0)} s: {resumenOcr.leidos} leídos
+          {resumenOcr.dudosos ? `, ${resumenOcr.dudosos} para revisar` : ""}
+          {resumenOcr.vacios ? `, ${resumenOcr.vacios} sin texto` : ""}
+          {resumenOcr.errores ? `, ${resumenOcr.errores} no se pudieron leer` : ""}.
+        </p>
+      )}
       {error && <p className="error">{error}</p>}
 
       <input
@@ -183,29 +236,48 @@ export function App() {
 
       <p className="cuenta">
         {Object.entries(ESTADOS).filter(([k]) => cuenta[k]).map(([k, v]) => `${v}: ${cuenta[k]}`).join(" · ")}
-        {cuenta["pendiente de OCR"] ? " (las fotos y escaneos se leerán con OCR en la próxima entrega)" : ""}
+        {cuenta.revisar ? ` · Para revisar: ${cuenta.revisar}` : ""}
       </p>
 
       {hallazgos && <p className="cuenta">{hallazgos.length === 0 ? "Sin resultados." : `${hallazgos.length} resultado${hallazgos.length === 1 ? "" : "s"}`}</p>}
 
       <ul className="docs">
         {lista.map(({ ficha, id, fragmento }) => (
-          <li key={id}>
+          <li key={id} className="fila">
             <button className="doc" onClick={() => onAbrirDocumento(id)} title="Abrir">
               <span className="nombre">{id.split("/").at(-1)}</span>
               <span className="meta">
                 {ficha?.carpeta ? `${ficha.carpeta} · ` : ""}{(ficha?.tipo || "sin extensión").toUpperCase()} · {tamano(ficha?.tamano)}
                 {ficha?.modificado ? ` · ${new Date(ficha.modificado).toLocaleDateString("es-DO")}` : ""}
                 {ficha?.estadoTexto && ficha.estadoTexto !== "listo" ? ` · ${ESTADOS[ficha.estadoTexto]}` : ""}
+                {ficha && dudoso(ficha) ? " · " : ""}
+                {ficha && dudoso(ficha) && <span className="revisar" title="El OCR no está seguro de esta lectura">Revisar lectura</span>}
               </span>
               {fragmento && <span className="fragmento">{resaltar(fragmento)}</span>}
             </button>
+            {ficha?.estadoTexto === "listo" && (
+              <button className="ver" onClick={() => setAbierto(abierto === id ? null : id)} aria-expanded={abierto === id}>
+                {abierto === id ? "Ocultar texto" : "Ver texto"}
+              </button>
+            )}
+            {abierto === id && (
+              <div className="texto">
+                {ficha?.confianza != null && (
+                  <p className="nota">Leído con OCR · confianza {Math.round(ficha.confianza * 100)} %{dudoso(ficha) ? " · compáralo con el original antes de usarlo" : ""}</p>
+                )}
+                <pre>{indice.current?.texto(id) ?? ""}</pre>
+              </div>
+            )}
           </li>
         ))}
       </ul>
       {!hallazgos && docs.length > MAX_FILAS && <p className="cuenta">Mostrando {MAX_FILAS} de {docs.length}. Usa la búsqueda para encontrar el resto.</p>}
     </main>
   );
+}
+
+function dudoso(d: FichaDocumento): boolean {
+  return d.estadoTexto === "listo" && d.confianza != null && d.confianza < CONFIANZA_MINIMA;
 }
 
 function tamano(b?: number | null): string {

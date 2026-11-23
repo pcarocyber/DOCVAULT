@@ -4,13 +4,15 @@
  */
 import type { DocIndice, EstadoTexto, Indice } from "@docvault/indice";
 import { configurarMotores, extraerTextoPdf } from "@docvault/core/navegador";
+import { extraerTextoDocx, extraerTextoXlsx } from "@docvault/core";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { recorrer, type ArchivoEncontrado } from "./carpeta";
 
 configurarMotores({ pdfWorker });
 
 const TEXTO_PLANO = new Set(["txt", "md", "csv", "json", "xml", "html", "htm", "rtf"]);
-const IMAGENES = new Set(["jpg", "jpeg", "png", "tif", "tiff", "webp", "heic", "bmp", "gif"]);
+/** Imágenes que el OCR sabe leer. HEIC (fotos del iPhone) todavía no: Chrome no las abre. */
+const IMAGENES = new Set(["jpg", "jpeg", "png", "tif", "tiff", "webp", "bmp", "gif"]);
 const MAX_TEXTO = 1_000_000;
 
 export interface Avance { fase: "buscando" | "leyendo" | "guardando"; hechos: number; total: number; actual?: string }
@@ -33,6 +35,11 @@ async function leerTexto(a: ArchivoEncontrado): Promise<{ texto: string; estado:
     }
     if (TEXTO_PLANO.has(ext)) {
       const t = await (await a.handle.getFile()).slice(0, MAX_TEXTO).text();
+      return { texto: t, estado: t.trim() ? "listo" : "sin texto" };
+    }
+    if (ext === "docx" || ext === "xlsx") {
+      const bytes = new Uint8Array(await (await a.handle.getFile()).arrayBuffer());
+      const t = ext === "docx" ? extraerTextoDocx(bytes) : extraerTextoXlsx(bytes);
       return { texto: t, estado: t.trim() ? "listo" : "sin texto" };
     }
     if (IMAGENES.has(ext)) return { texto: "", estado: "pendiente de OCR" };

@@ -57,12 +57,12 @@ export async function extraerTextoPdf(bytes: Uint8Array): Promise<TextoPdf> {
   return { texto: partes.join("\n").trim(), paginas, segundos: (performance.now() - t0) / 1000 };
 }
 
-/** Convierte cada página de un PDF escaneado en imagen para pasarla por OCR. */
-export async function pdfAImagenes(bytes: Uint8Array, escala = 3): Promise<Blob[]> {
+/** Convierte cada página de un PDF escaneado en imagen para pasarla por OCR (hasta `maxPaginas`). */
+export async function pdfAImagenes(bytes: Uint8Array, escala = 3, maxPaginas = Infinity): Promise<Blob[]> {
   void r().pdfWorker;
   const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise;
   const out: Blob[] = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
+  for (let p = 1; p <= Math.min(pdf.numPages, maxPaginas); p++) {
     const pagina = await pdf.getPage(p);
     const vista = pagina.getViewport({ scale: escala });
     const lienzo = new OffscreenCanvas(Math.ceil(vista.width), Math.ceil(vista.height));

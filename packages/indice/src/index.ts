@@ -16,6 +16,8 @@ export interface DocIndice {
   modificado?: number;   // milisegundos desde 1970
   tipo?: string;         // extensión en minúsculas: pdf, jpg, docx…
   estadoTexto?: EstadoTexto;
+  /** Solo para texto leído con OCR: de 0 a 1. Por debajo de 0,7 conviene revisarlo. */
+  confianza?: number;
 }
 
 /** Cómo se obtuvo el texto del documento. */
@@ -23,13 +25,13 @@ export type EstadoTexto = "listo" | "sin texto" | "pendiente de OCR" | "formato 
 
 export interface FichaDocumento {
   id: string; titulo: string; carpeta: string | null; ruta: string | null; tamano: number | null;
-  modificado: number | null; tipo: string | null; estadoTexto: EstadoTexto | null;
+  modificado: number | null; tipo: string | null; estadoTexto: EstadoTexto | null; confianza: number | null;
 }
 
 /** `fragmento` marca las palabras halladas entre los caracteres \u0002 y \u0003. */
 export interface Hallazgo { id: string; titulo: string; fragmento: string; puntaje: number }
 
-const VERSION_ESQUEMA = 2;
+const VERSION_ESQUEMA = 3;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Sqlite = any;
@@ -48,7 +50,7 @@ function crearEsquema(db: Db) {
     DROP TABLE IF EXISTS busqueda;
     CREATE TABLE documentos (
       id TEXT PRIMARY KEY, titulo TEXT, carpeta TEXT, ruta TEXT,
-      tamano INTEGER, modificado INTEGER, tipo TEXT, estado_texto TEXT
+      tamano INTEGER, modificado INTEGER, tipo TEXT, estado_texto TEXT, confianza REAL
     );
     CREATE VIRTUAL TABLE busqueda USING fts5(
       id UNINDEXED, titulo, texto, tokenize = 'unicode61 remove_diacritics 2'
@@ -75,7 +77,13 @@ export class Indice {
           sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE | sqlite3.capi.SQLITE_DESERIALIZE_RESIZEABLE,
         );
         db.checkRc(rc);
-        if (db.selectValue("PRAGMA user_version") === VERSION_ESQUEMA) return new Indice(sqlite3, db);
+        const version = db.selectValue("PRAGMA user_version");
+        if (version === 2) {
+          // entrega 1 → entrega 2: solo se agrega la columna de confianza del OCR
+          db.exec(`ALTER TABLE documentos ADD COLUMN confianza REAL; PRAGMA user_version = ${VERSION_ESQUEMA};`);
+          return new Indice(sqlite3, db);
+        }
+        if (version === VERSION_ESQUEMA) return new Indice(sqlite3, db);
         db.close();
       } catch {
         // índice dañado: se reconstruye desde la carpeta
@@ -97,8 +105,9 @@ export class Indice {
     try {
       for (const d of docs) {
         this.db.exec({
-          sql: "INSERT OR REPLACE INTO documentos VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-          bind: [d.id, d.titulo, d.carpeta ?? null, d.ruta ?? null, d.tamano ?? null, d.modificado ?? null, d.tipo ?? null, d.estadoTexto ?? null],
+          sql: `INSERT OR REPLACE INTO documentos (id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto, confianza)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          bind: [d.id, d.titulo, d.carpeta ?? null, d.ruta ?? null, d.tamano ?? null, d.modificado ?? null, d.tipo ?? null, d.estadoTexto ?? null, d.confianza ?? null],
         });
         this.db.exec({ sql: "DELETE FROM busqueda WHERE id = ?", bind: [d.id] });
         this.db.exec({ sql: "INSERT INTO busqueda (id, titulo, texto) VALUES (?, ?, ?)", bind: [d.id, d.titulo, d.texto] });
@@ -123,7 +132,7 @@ export class Indice {
   listar(): FichaDocumento[] {
     const filas: FichaDocumento[] = [];
     this.db.exec({
-      sql: `SELECT id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto
+      sql: `SELECT id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto, confianza
             FROM documentos ORDER BY coalesce(ruta, id)`,
       rowMode: "object",
       callback: (f: FichaDocumento) => { filas.push({ ...f }); },
@@ -148,6 +157,26 @@ export class Indice {
       callback: (f: Hallazgo) => { filas.push({ ...f }); },
     });
     return filas;
+  }
+
+  /** El texto guardado de un documento, o null si no está en el índice. */
+  texto(id: string): string | null {
+    return (this.db.selectValue("SELECT texto FROM busqueda WHERE id = ?", [id]) as string | undefined) ?? null;
+  }
+
+  /** Cambia solo el texto de un documento ya indexado (por ejemplo, al terminar su OCR). */
+  ponerTexto(id: string, texto: string, estado: EstadoTexto, confianza: number | null): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec({ sql: "UPDATE documentos SET estado_texto = ?, confianza = ? WHERE id = ?", bind: [estado, confianza, id] });
+      const titulo = this.db.selectValue("SELECT titulo FROM busqueda WHERE id = ?", [id]) as string | undefined;
+      this.db.exec({ sql: "DELETE FROM busqueda WHERE id = ?", bind: [id] });
+      this.db.exec({ sql: "INSERT INTO busqueda (id, titulo, texto) VALUES (?, ?, ?)", bind: [id, titulo ?? id, texto] });
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
   }
 
   contar(): number {

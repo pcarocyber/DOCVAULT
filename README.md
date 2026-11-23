@@ -3,9 +3,10 @@
 Bóveda de documentos gratuita que corre en el navegador (Chrome y Edge) y
 organiza una carpeta local del usuario. Todo es local por defecto, incluida la IA.
 
-Estado: **fase 1, entrega 1**. La app ya abre una carpeta de tu computadora, lee el texto
-de PDF y archivos de texto, y busca en nombres y contenido. Las fotos y escaneos todavía
-no se leen (eso es el OCR de la próxima entrega).
+Estado: **fase 1, entrega 2**. La app abre una carpeta de tu computadora, lee el texto de
+PDF, Word (.docx), Excel (.xlsx) y archivos de texto, lee fotos y escaneos con OCR, y busca
+en nombres y contenido. Los formatos viejos (.doc, .xls) y las fotos HEIC del iPhone todavía
+se buscan solo por nombre.
 
 ## Para usar la app
 
@@ -16,6 +17,9 @@ no se leen (eso es el OCR de la próxima entrega).
 4. Pulsa **Elegir carpeta** y escoge la carpeta con tus documentos. Chrome pedirá permiso
    para ver los archivos. La app **solo lee**: no mueve, cambia ni borra nada.
 5. Escribe en el buscador. No importan acentos ni mayúsculas.
+6. Las fotos y los escaneos se leen solos después, en segundo plano; puedes seguir buscando
+   mientras tanto. **Ver texto** muestra lo que la app leyó. Si dice **Revisar lectura**, el
+   OCR no está seguro: compáralo con el original.
 
 El índice se guarda dentro de Chrome, en tu computadora; no sale a internet. Si agregas o
 quitas archivos, pulsa **Actualizar**. Para cerrar la app, pulsa Ctrl+C en la Terminal.
