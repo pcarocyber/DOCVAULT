@@ -20,6 +20,10 @@ se buscan solo por nombre.
 6. Las fotos y los escaneos se leen solos después, en segundo plano; puedes seguir buscando
    mientras tanto. **Ver texto** muestra lo que la app leyó. Si dice **Revisar lectura**, el
    OCR no está seguro: compáralo con el original.
+7. **Nueva carpeta** crea una carpeta con nombre y una descripción corta de lo que va en ella.
+   **Subir archivos** (o arrastrarlos a la ventana) lee cada archivo, te sugiere la carpeta y
+   los copia ahí cuando pulsas Guardar. La primera vez Chrome te pedirá permiso para escribir
+   en tu carpeta. Los originales no se tocan.
 
 El índice se guarda dentro de Chrome, en tu computadora; no sale a internet. Si agregas o
 quitas archivos, pulsa **Actualizar**. Para cerrar la app, pulsa Ctrl+C en la Terminal.

@@ -4,7 +4,9 @@ import {
   borrarIndiceGuardado, guardarIndice, leerCarpetaRecordada, leerIndiceGuardado,
   pedirAlmacenamientoPersistente, recordarCarpeta,
 } from "./almacen";
-import { archivoPorRuta, elegirCarpeta, navegadorCompatible, pedirPermiso, tienePermiso } from "./carpeta";
+import { archivoPorRuta, elegirCarpeta, leerCarpetas, navegadorCompatible, pedirPermiso, tienePermiso, type Carpeta } from "./carpeta";
+import { Carpetas } from "./Carpetas";
+import { Subir } from "./Subir";
 import { actualizarIndice, type Avance, type ResumenIndexado } from "./indexar";
 import { ColaOcr, CONFIANZA_MINIMA, type AvanceOcr, type ResumenOcr } from "./ocr";
 
@@ -33,6 +35,14 @@ export function App() {
   const [resumenOcr, setResumenOcr] = useState<ResumenOcr | null>(null);
   const [abierto, setAbierto] = useState<string | null>(null);
   const cola = useRef<{ cola: ColaOcr; fin: Promise<unknown> } | null>(null);
+  const [carpetas, setCarpetas] = useState<Carpeta[]>([]);
+  const [subiendo, setSubiendo] = useState<File[] | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const elegirArchivos = useRef<HTMLInputElement>(null);
+
+  const releerCarpetas = useCallback(async (h: FileSystemDirectoryHandle) => {
+    try { setCarpetas(await leerCarpetas(h)); } catch { setCarpetas([]); }
+  }, []);
 
   /** Detiene el OCR en curso y espera a que suelte el documento que estaba leyendo. */
   const pararOcr = useCallback(async () => {
@@ -69,6 +79,7 @@ export function App() {
       await guardarIndice(indice.current.exportar());
       setDocs(indice.current.listar());
       setResumen(r);
+      await releerCarpetas(h);
     } catch (e) {
       setError(`No se pudo leer la carpeta: ${String(e)}`);
     } finally {
@@ -76,12 +87,14 @@ export function App() {
       setAvance(null);
     }
     empezarOcr(h);
-  }, [pararOcr, empezarOcr]);
+  }, [pararOcr, empezarOcr, releerCarpetas]);
 
   const abrir = useCallback(async (h: FileSystemDirectoryHandle, nueva: boolean) => {
     await pararOcr();
     setResumenOcr(null);
     setAbierto(null);
+    setSubiendo(null);
+    setAviso(null);
     if (nueva) {
       await borrarIndiceGuardado();
       await recordarCarpeta(h);
@@ -187,13 +200,26 @@ export function App() {
     : docs.slice(0, MAX_FILAS).map((d) => ({ ficha: d, id: d.id, fragmento: "" }));
 
   return (
-    <main>
+    <main
+      onDragOver={(e) => { if (carpeta && !subiendo) e.preventDefault(); }}
+      onDrop={(e) => {
+        if (!carpeta || subiendo) return;
+        e.preventDefault();
+        const f = [...e.dataTransfer.files];
+        if (f.length) { setAviso(null); setSubiendo(f); }
+      }}
+    >
       <header>
         <div>
           <h1>DOCVAULT</h1>
           <p className="sub">Carpeta: <b>{carpeta?.name}</b> · {docs.length.toLocaleString("es-DO")} documentos</p>
         </div>
         <div className="acciones">
+          <button className="primario" onClick={() => elegirArchivos.current?.click()} disabled={!!avance || !!subiendo}>Subir archivos</button>
+          <input
+            ref={elegirArchivos} type="file" multiple hidden aria-label="Elegir archivos para subir"
+            onChange={(e) => { const f = [...(e.target.files ?? [])]; e.target.value = ""; if (f.length) { setAviso(null); setSubiendo(f); } }}
+          />
           <button onClick={() => carpeta && actualizar(carpeta)} disabled={!!avance}>Actualizar</button>
           <button onClick={onElegir} disabled={!!avance}>Cambiar carpeta</button>
         </div>
@@ -228,6 +254,23 @@ export function App() {
         </p>
       )}
       {error && <p className="error">{error}</p>}
+      {aviso && <p className="estado" role="status">{aviso}</p>}
+
+      {subiendo && carpeta && indice.current && (
+        <Subir
+          raiz={carpeta} indice={indice.current} carpetas={carpetas} archivos={subiendo}
+          alGuardar={async (rutas) => {
+            if (!indice.current) return;
+            await guardarIndice(indice.current.exportar());
+            setDocs(indice.current.listar());
+            await releerCarpetas(carpeta);
+            setAviso(`${rutas.length} ${rutas.length === 1 ? "archivo guardado" : "archivos guardados"} en tu carpeta.`);
+          }}
+          alCerrar={() => setSubiendo(null)}
+        />
+      )}
+
+      {carpeta && <Carpetas raiz={carpeta} carpetas={carpetas} alCambiar={() => releerCarpetas(carpeta)} />}
 
       <input
         className="buscar" type="search" autoFocus placeholder="Buscar en nombres y en el texto de los documentos"

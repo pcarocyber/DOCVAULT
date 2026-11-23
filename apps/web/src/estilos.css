@@ -39,3 +39,23 @@ header .sub { margin-bottom: 12px; }
 .meta { display: block; color: var(--sub); font-size: 13px; overflow-wrap: anywhere; }
 .fragmento { display: block; font-size: 14px; margin-top: 4px; }
 mark { background: var(--mark); color: inherit; border-radius: 2px; }
+
+.carpetas { margin: 12px 0; }
+.carpetas-titulo { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.carpetas h2 { font-size: 15px; margin: 0; color: var(--sub); font-weight: 600; }
+.carpetas-titulo button { font-size: 13px; padding: 4px 10px; }
+.chips { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: flex; flex-direction: column; align-items: flex-start; text-align: left; max-width: 280px; padding: 6px 10px; font-size: 13px; }
+.chip span { color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.chip span.falta { color: var(--warn); }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 12px 0; }
+.panel h3 { margin: 0 0 10px; font-size: 16px; }
+.panel label { display: block; font-size: 14px; margin: 8px 0; }
+.panel input { display: block; width: 100%; font: inherit; padding: 8px 10px; margin-top: 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.panel .acciones { margin-top: 12px; flex-wrap: wrap; }
+.subidas { list-style: none; padding: 0; margin: 0; }
+.subidas li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 8px 0; border-bottom: 1px solid var(--line); align-items: center; }
+.subidas .meta { grid-column: 1; }
+.subidas .elegir { grid-column: 2; grid-row: 1 / span 2; margin: 0; font-size: 13px; color: var(--sub); }
+.subidas select { display: block; font: inherit; font-size: 14px; padding: 6px 8px; margin-top: 2px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); max-width: 220px; }
+@media (max-width: 560px) { .subidas li { grid-template-columns: 1fr; } .subidas .elegir { grid-column: 1; grid-row: auto; } }

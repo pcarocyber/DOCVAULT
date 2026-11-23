@@ -45,32 +45,10 @@ export class ColaOcr {
         try {
           this.motor ??= await MotorOcr.crear(["spa", "eng"]);
           const archivo = await archivoPorRuta(raiz, doc.id);
-          // Una imagen dañada hace fallar a Tesseract de forma ruidosa; mejor detectarla antes.
-          // (Chrome no abre TIFF, pero Tesseract sí, así que esas pasan directo.)
-          if (doc.tipo !== "pdf" && doc.tipo !== "tif" && doc.tipo !== "tiff") (await createImageBitmap(archivo)).close();
-          const imagenes = doc.tipo === "pdf"
-            ? await pdfAImagenes(new Uint8Array(await archivo.arrayBuffer()), 2.5, MAX_PAGINAS)
-            : [archivo];
-          const textos: string[] = [];
-          let suma = 0;
-          let letras = 0;
-          for (const img of imagenes) {
-            const res = await this.motor.reconocer(img);
-            textos.push(res.texto.trim());
-            // la confianza del documento pesa cada página por la cantidad de texto que tiene
-            const n = res.texto.replace(/\s/g, "").length;
-            suma += res.confianza * n;
-            letras += n;
-          }
-          const texto = textos.join("\n\n").trim();
-          if (letras < 3) {
-            indice.ponerTexto(doc.id, "", "sin texto", null);
-            r.vacios++;
-          } else {
-            const confianza = Math.round((suma / letras) * 100) / 100;
-            indice.ponerTexto(doc.id, texto, "listo", confianza);
-            if (confianza < CONFIANZA_MINIMA) r.dudosos++;
-          }
+          const l = await leerConOcr(this.motor, archivo, doc.tipo ?? "");
+          indice.ponerTexto(doc.id, l.texto, l.estado, l.confianza);
+          if (l.estado === "sin texto") r.vacios++;
+          else if (l.confianza != null && l.confianza < CONFIANZA_MINIMA) r.dudosos++;
           r.leidos++;
         } catch {
           indice.ponerTexto(doc.id, "", "error", null);
@@ -86,4 +64,29 @@ export class ColaOcr {
     r.segundos = (performance.now() - t0) / 1000;
     return r;
   }
+}
+
+/** Lee una foto o un PDF escaneado con OCR. Lanza error si la imagen está dañada. */
+export async function leerConOcr(
+  motor: MotorOcr, archivo: File, tipo: string,
+): Promise<{ texto: string; estado: "listo" | "sin texto"; confianza: number | null }> {
+  // Una imagen dañada hace fallar a Tesseract de forma ruidosa; mejor detectarla antes.
+  // (Chrome no abre TIFF, pero Tesseract sí, así que esas pasan directo.)
+  if (tipo !== "pdf" && tipo !== "tif" && tipo !== "tiff") (await createImageBitmap(archivo)).close();
+  const imagenes = tipo === "pdf"
+    ? await pdfAImagenes(new Uint8Array(await archivo.arrayBuffer()), 2.5, MAX_PAGINAS)
+    : [archivo];
+  const textos: string[] = [];
+  let suma = 0;
+  let letras = 0;
+  for (const img of imagenes) {
+    const res = await motor.reconocer(img);
+    textos.push(res.texto.trim());
+    // la confianza del documento pesa cada página por la cantidad de texto que tiene
+    const n = res.texto.replace(/\s/g, "").length;
+    suma += res.confianza * n;
+    letras += n;
+  }
+  if (letras < 3) return { texto: "", estado: "sin texto", confianza: null };
+  return { texto: textos.join("\n\n").trim(), estado: "listo", confianza: Math.round((suma / letras) * 100) / 100 };
 }

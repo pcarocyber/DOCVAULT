@@ -54,8 +54,12 @@ const servidor = await preview({ root: raiz, preview: { port: 5199, strictPort: 
 const url = servidor.resolvedUrls.local[0];
 const navegador = await chromium.launch();
 const pagina = await navegador.newPage();
+// El modelo de IA básica se sirve desde bench/modelos (ver motores.ts); sin esa copia,
+// la prueba lo bajaría de Hugging Face.
 const errores = [];
 pagina.on("pageerror", (e) => errores.push(e.message));
+// DEPURAR=1 muestra la consola del navegador.
+if (process.env.DEPURAR) pagina.on("console", (m) => console.log("  [consola]", m.text().slice(0, 300)));
 
 try {
   await pagina.goto(`${url}?pruebas`);
@@ -132,6 +136,76 @@ try {
   await pagina.getByText(/1 nuevos, 0 cambiados, 1 quitados, 8 sin cambios/).waitFor({ timeout: 30_000 });
   assert.deepEqual(await buscar("poder"), ["poder especial.pdf"]);
   assert.deepEqual(await buscar("poliza"), []);
+
+  // Carpetas: describir dos que ya existen y crear una nueva.
+  await pagina.getByLabel("Buscar").fill("");
+  const describir = async (nombre, descripcion) => {
+    await pagina.locator(".chip").filter({ hasText: nombre }).click();
+    await pagina.getByLabel("¿Qué va en esta carpeta?").fill(descripcion);
+    await pagina.getByRole("button", { name: "Guardar", exact: true }).click();
+    await pagina.locator(".chip").filter({ hasText: descripcion }).waitFor();
+  };
+  await describir("Facturas", "facturas, recibos y comprobantes de compra o pago");
+  await describir("Contratos", "contratos y acuerdos firmados entre partes: alquiler, servicios, confidencialidad");
+  await pagina.getByRole("button", { name: "Nueva carpeta" }).click();
+  await pagina.getByRole("button", { name: "Crear carpeta" }).click();
+  assert.match(await pagina.locator(".panel .error").textContent(), /Escribe un nombre/, "no deja crear sin nombre");
+  await pagina.getByLabel("Nombre").fill("Seguros");
+  await pagina.getByLabel("¿Qué va en esta carpeta?").fill("pólizas, certificados de seguro y garantías");
+  await pagina.getByRole("button", { name: "Crear carpeta" }).click();
+  await pagina.locator(".chip").filter({ hasText: "Seguros" }).waitFor();
+  const ajustes = await pagina.evaluate(async () => {
+    const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
+    const f = await (await (await raiz.getDirectoryHandle(".docvault")).getFileHandle("carpetas.json")).getFile();
+    return JSON.parse(await f.text());
+  });
+  assert.equal(ajustes.carpetas.Seguros, "pólizas, certificados de seguro y garantías", "la descripción se guarda en la carpeta del usuario");
+
+  // Subir tres archivos: la app los lee (uno con OCR), sugiere carpeta y guarda al confirmar.
+  await pagina.getByLabel("Elegir archivos para subir").setInputFiles([
+    { name: "factura luz.pdf", mimeType: "application/pdf", buffer: Buffer.from(pdfConTexto("Factura de servicio electrico. Total a pagar RD$ 3,450.00. Fecha de vencimiento del pago: 20 de diciembre de 2026.")) },
+    { name: "IMG_2031.jpg", mimeType: "image/jpeg", buffer: readFileSync(resolve(raiz, "e2e/datos/recibo.jpg")) },
+    { name: "poliza auto.txt", mimeType: "text/plain", buffer: Buffer.from("Poliza de seguro de vehiculo. Cobertura contra todo riesgo. Aseguradora: Seguros Ejemplo. Vigencia hasta marzo 2027.") },
+  ]);
+  const guardar = pagina.locator(".subir").getByRole("button", { name: "Guardar" });
+  await guardar.waitFor({ timeout: 120_000 });
+  await pagina.waitForFunction(() => !document.querySelector(".subir .primario")?.hasAttribute("disabled"), null, { timeout: 120_000 });
+  const elegida = (n) => pagina.getByLabel(`Carpeta para ${n}`).inputValue();
+  const sugerencias = { factura: await elegida("factura luz.pdf"), foto: await elegida("IMG_2031.jpg"), poliza: await elegida("poliza auto.txt") };
+  console.log(`  Sugerencias: ${JSON.stringify(sugerencias)}`);
+  assert.equal(sugerencias.factura, "Facturas");
+  // Un recibo de alquiler es ambiguo (Facturas o Contratos): aquí el usuario corrige la sugerencia.
+  assert.ok(["Facturas", "Contratos"].includes(sugerencias.foto), "el recibo leído con OCR va a una carpeta descrita");
+  await pagina.getByLabel("Carpeta para IMG_2031.jpg").selectOption("Facturas");
+  assert.equal(sugerencias.poliza, "Seguros");
+  assert.match(await pagina.locator(".subir").textContent(), /\(sugerida\)/);
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-subir.png") });
+  await guardar.click();
+  await pagina.getByText("3 archivos guardados en tu carpeta.").waitFor({ timeout: 30_000 });
+  await pagina.getByRole("button", { name: "Cerrar" }).click();
+  assert.deepEqual(await buscar("vigencia"), ["poliza auto.txt"]);
+  assert.match(await pagina.locator(".docs .meta").first().textContent(), /^Seguros/);
+  assert.equal((await buscar("alquiler octubre")).length, 2, "la foto subida se puede buscar por su texto");
+  const escritos = await pagina.evaluate(async () => {
+    const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
+    const nombres = async (d) => { const n = []; for await (const h of (await raiz.getDirectoryHandle(d)).values()) n.push(h.name); return n.sort(); };
+    return { Facturas: await nombres("Facturas"), Seguros: await nombres("Seguros") };
+  });
+  assert.deepEqual(escritos, { Facturas: ["IMG_2031.jpg", "factura B0100004521.pdf", "factura luz.pdf"], Seguros: ["poliza auto.txt"] });
+
+  // Subir otra vez un archivo con el mismo nombre no reemplaza el anterior.
+  await pagina.getByLabel("Elegir archivos para subir").setInputFiles([
+    { name: "poliza auto.txt", mimeType: "text/plain", buffer: Buffer.from("Endoso de la poliza de seguro: cambio de placa.") },
+  ]);
+  await pagina.waitForFunction(() => !document.querySelector(".subir .primario")?.hasAttribute("disabled"), null, { timeout: 60_000 });
+  await pagina.locator(".subir").getByRole("button", { name: "Guardar" }).click();
+  await pagina.getByText("Guardado en Seguros/poliza auto (2).txt (ya había uno con ese nombre)").waitFor({ timeout: 30_000 });
+  await pagina.getByRole("button", { name: "Cerrar" }).click();
+
+  // Al recargar no hay nada nuevo que leer: lo subido ya quedó en el índice.
+  await pagina.reload();
+  await estadoIndice.waitFor({ timeout: 30_000 });
+  assert.match(await estadoIndice.textContent(), /0 nuevos, 0 cambiados, 0 quitados, 13 sin cambios/);
 
   await pagina.getByLabel("Buscar").fill("");
   await pagina.screenshot({ path: resolve(raiz, "e2e/captura.png") });
