@@ -37,3 +37,11 @@ describe("Excel (.xlsx)", () => {
     expect(extraerTextoXlsx(zip)).toBe("Hoja1\nPóliza 123");
   });
 });
+
+describe("crear .xlsx", () => {
+  it("se vuelve a leer igual, con acentos, números y caracteres especiales", async () => {
+    const { crearXlsx } = await import("../src/oficina");
+    const bytes = crearXlsx([{ nombre: "Índice", filas: [["Código", "Nombre", "Tamaño (KB)"], ["DV-000001", "Póliza <auto> & más", 12.5], ["DV-000002", "notas.txt", null]], anchos: [12, 40, 12] }]);
+    expect(extraerTextoXlsx(bytes)).toBe("Índice\nCódigo\tNombre\tTamaño (KB)\nDV-000001\tPóliza <auto> & más\t12.5\nDV-000002\tnotas.txt");
+  });
+});

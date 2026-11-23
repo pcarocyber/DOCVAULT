@@ -3,7 +3,9 @@
  * Crea una carpeta de prueba en el almacenamiento privado del navegador (OPFS),
  * se la da a la app, y revisa: indexa, lee Word y Excel, lee fotos y escaneos
  * con OCR, busca, muestra el texto, recuerda el índice al recargar, y se pone
- * al día cuando se agrega o se borra un archivo.
+ * al día cuando se agrega, se borra o se mueve un archivo. También el diseño
+ * (carpetas, fila de documentos, ficha con QR y código de barras), el código único
+ * de cada documento, la búsqueda por código y la exportación a Excel.
  * Uso: npm run e2e  (desde la raíz del repositorio)
  */
 import assert from "node:assert/strict";
@@ -12,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { preview } from "vite";
 import { chromium } from "playwright";
+import { unzipSync, strFromU8 } from "fflate";
 
 const raiz = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -84,7 +87,7 @@ try {
   const estadoIndice = pagina.locator(".estado").filter({ hasText: "Índice al día" });
   await estadoIndice.waitFor({ timeout: 30_000 });
   assert.match(await estadoIndice.textContent(), /9 nuevos/, "deben indexarse 9 archivos (el oculto no)");
-  assert.match(await pagina.locator("header").textContent(), /9 documentos/);
+  assert.match(await pagina.locator(".contexto").textContent(), /9 documentos/);
 
   // El OCR corre después, en segundo plano: foto, escaneo y una "foto" que no es imagen.
   const estadoOcr = pagina.locator(".estado").filter({ hasText: "Fotos y escaneos leídos" });
@@ -92,10 +95,14 @@ try {
   assert.match(await estadoOcr.textContent(), /2 leídos.*1 no se pudieron leer/);
   console.log(`  OCR: ${(await estadoOcr.textContent()).trim()}`);
 
+  const codigoDe = async (q) => {
+    await buscar(q);
+    return (await pagina.locator(".resultados .codigo").first().textContent()).trim();
+  };
   const buscar = async (q) => {
     await pagina.getByLabel("Buscar").fill(q);
     await pagina.waitForTimeout(150);
-    return pagina.locator(".docs .nombre").allTextContents();
+    return pagina.locator(".resultados .nombre").allTextContents();
   };
   assert.deepEqual(await buscar("arrendamiento"), ["arrendamiento local.pdf"], "busca en el texto del PDF");
   assert.deepEqual(await buscar("credito fiscal"), ["factura B0100004521.pdf"], "busca sin acentos");
@@ -109,13 +116,40 @@ try {
   assert.deepEqual(await buscar("toyota chasis"), ["acto de venta.docx"], "texto de Word");
   assert.deepEqual(await buscar("inversor"), ["gastos.xlsx"], "texto de Excel");
 
-  // Ver el texto extraído de la foto.
+  // Ver la ficha de la foto: su código, el QR, el código de barras y el texto leído.
   await buscar("recibo");
-  await pagina.getByRole("button", { name: "Ver texto" }).first().click();
-  const texto = await pagina.locator(".texto pre").textContent();
+  await pagina.getByRole("button", { name: "Ver ficha de recibo.jpg" }).click();
+  const ficha = pagina.getByRole("dialog", { name: "Ficha del documento" });
+  await ficha.waitFor();
+  const codigoRecibo = (await ficha.locator(".codigo-grande").textContent()).trim();
+  assert.match(codigoRecibo, /^DV-\d{6}$/, "cada documento tiene su código");
+  assert.equal(await ficha.locator("svg.qr").count(), 1, "la ficha muestra el QR");
+  assert.equal(await ficha.locator("svg.barras").count(), 1, "la ficha muestra el código de barras");
+  assert.equal(new URL(pagina.url()).hash, `#${codigoRecibo}`, "la dirección lleva el código");
+  await ficha.getByRole("button", { name: "Ver texto" }).click();
+  const texto = await ficha.locator(".texto pre").textContent();
   assert.match(texto, /RECIBO DE PAGO/);
-  assert.match(await pagina.locator(".texto .nota").textContent(), /Leído con OCR · confianza \d+ %/);
-  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-texto.png") });
+  assert.match(await ficha.locator(".texto .nota").textContent(), /Leído con OCR · confianza \d+ %/);
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-ficha.png") });
+  await pagina.keyboard.press("Escape");
+  await ficha.waitFor({ state: "detached" });
+
+  // Los 9 documentos tienen códigos distintos, del DV-000001 al DV-000009.
+  const codigos = [];
+  for (let n = 1; n <= 9; n++) {
+    const r = await buscar(`DV-${String(n).padStart(6, "0")}`);
+    assert.ok(r.length >= 1, `el código DV-${n} existe`);
+    codigos.push(r[0]);
+  }
+  assert.equal(new Set(codigos).size, 9, "no hay dos documentos con el mismo código");
+  // También se reconoce escrito a mano ("dv 3", "000003") y Enter abre la ficha, como haría un lector.
+  const tercero = codigos[2];
+  assert.equal((await buscar("dv 3"))[0], tercero);
+  assert.equal((await buscar("000003"))[0], tercero);
+  await pagina.getByLabel("Buscar").press("Enter");
+  await ficha.waitFor();
+  assert.equal((await ficha.locator(".ficha-nombre").textContent()).trim(), tercero);
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
 
   // Al recargar, la app recuerda la carpeta y el índice; nada que releer.
   await pagina.reload();
@@ -136,14 +170,31 @@ try {
   await pagina.getByText(/1 nuevos, 0 cambiados, 1 quitados, 8 sin cambios/).waitFor({ timeout: 30_000 });
   assert.deepEqual(await buscar("poder"), ["poder especial.pdf"]);
   assert.deepEqual(await buscar("poliza"), []);
+  assert.equal(await codigoDe("poder"), "DV-000010", "el nuevo recibe el siguiente número; el del borrado no se reutiliza");
+
+  // Mover un archivo a otra carpeta fuera de la app: conserva su código.
+  const codigoActo = await codigoDe("toyota chasis");
+  await pagina.evaluate(async () => {
+    const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
+    const origen = await raiz.getDirectoryHandle("Vehículo");
+    const f = await (await origen.getFileHandle("acto de venta.docx")).getFile();
+    const w = await (await (await raiz.getDirectoryHandle("Contratos")).getFileHandle("acto de venta.docx", { create: true })).createWritable();
+    await w.write(await f.arrayBuffer()); await w.close();
+    await origen.removeEntry("acto de venta.docx");
+  });
+  await pagina.getByLabel("Buscar").fill("");
+  await pagina.getByRole("button", { name: "Actualizar" }).click();
+  await pagina.getByText(/0 nuevos, 0 cambiados, 0 quitados, 8 sin cambios\. 1 movido o renombrado/).waitFor({ timeout: 30_000 });
+  assert.equal(await codigoDe("toyota chasis"), codigoActo, "el archivo movido conserva su código");
+  assert.match(await pagina.locator(".resultados .meta").first().textContent(), /^Contratos/);
 
   // Carpetas: describir dos que ya existen y crear una nueva.
   await pagina.getByLabel("Buscar").fill("");
   const describir = async (nombre, descripcion) => {
-    await pagina.locator(".chip").filter({ hasText: nombre }).click();
+    await pagina.getByRole("button", { name: `Editar ${nombre}` }).click();
     await pagina.getByLabel("¿Qué va en esta carpeta?").fill(descripcion);
     await pagina.getByRole("button", { name: "Guardar", exact: true }).click();
-    await pagina.locator(".chip").filter({ hasText: descripcion }).waitFor();
+    await pagina.locator(".tarjeta-carpeta").filter({ hasText: descripcion }).waitFor();
   };
   await describir("Facturas", "facturas, recibos y comprobantes de compra o pago");
   await describir("Contratos", "contratos y acuerdos firmados entre partes: alquiler, servicios, confidencialidad");
@@ -153,7 +204,7 @@ try {
   await pagina.getByLabel("Nombre").fill("Seguros");
   await pagina.getByLabel("¿Qué va en esta carpeta?").fill("pólizas, certificados de seguro y garantías");
   await pagina.getByRole("button", { name: "Crear carpeta" }).click();
-  await pagina.locator(".chip").filter({ hasText: "Seguros" }).waitFor();
+  await pagina.locator(".tarjeta-carpeta").filter({ hasText: "Seguros" }).waitFor();
   const ajustes = await pagina.evaluate(async () => {
     const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
     const f = await (await (await raiz.getDirectoryHandle(".docvault")).getFileHandle("carpetas.json")).getFile();
@@ -184,7 +235,8 @@ try {
   await pagina.getByText("3 archivos guardados en tu carpeta.").waitFor({ timeout: 30_000 });
   await pagina.getByRole("button", { name: "Cerrar" }).click();
   assert.deepEqual(await buscar("vigencia"), ["poliza auto.txt"]);
-  assert.match(await pagina.locator(".docs .meta").first().textContent(), /^Seguros/);
+  assert.match(await pagina.locator(".resultados .meta").first().textContent(), /^Seguros/);
+  assert.match(await codigoDe("vigencia"), /^DV-0000(1[1-3])$/, "lo subido recibe su código");
   assert.equal((await buscar("alquiler octubre")).length, 2, "la foto subida se puede buscar por su texto");
   const escritos = await pagina.evaluate(async () => {
     const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
@@ -202,10 +254,58 @@ try {
   await pagina.getByText("Guardado en Seguros/poliza auto (2).txt (ya había uno con ese nombre)").waitFor({ timeout: 30_000 });
   await pagina.getByRole("button", { name: "Cerrar" }).click();
 
+  // Abrir una carpeta: sus documentos aparecen en fila, y la búsqueda se puede limitar a ella.
+  await pagina.getByLabel("Buscar").fill("");
+  await pagina.getByRole("button", { name: "Carpeta Facturas" }).click();
+  const fila = pagina.getByRole("list", { name: "Documentos de Facturas" });
+  assert.deepEqual((await fila.locator(".nombre").allTextContents()).sort(), ["IMG_2031.jpg", "factura B0100004521.pdf", "factura luz.pdf"]);
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-carpeta.png") });
+  assert.deepEqual((await buscar("pago")).every((n) => /factura|IMG_2031/.test(n)), true, "con la carpeta abierta, busca solo en ella");
+  const enFacturas = (await buscar("pago")).length;
+  await pagina.getByLabel("Solo en Facturas").uncheck();
+  assert.ok((await buscar("pago")).length > enFacturas, "sin el filtro busca en todas las carpetas");
+  await pagina.getByLabel("Buscar").fill("");
+  await pagina.getByRole("button", { name: "Carpeta Facturas" }).click();
+
+  // La fila de recientes sigue al cursor: al llevarlo a la derecha, se desplaza.
+  const recientes = pagina.getByRole("list", { name: "Documentos recientes" });
+  const caja = await recientes.boundingBox();
+  await pagina.mouse.move(caja.x + caja.width / 2, caja.y + caja.height / 2);
+  await pagina.mouse.move(caja.x + caja.width - 4, caja.y + caja.height / 2, { steps: 8 });
+  await pagina.waitForTimeout(1200);
+  const desplazado = await recientes.evaluate((el) => ({ izq: el.scrollLeft, max: el.scrollWidth - el.clientWidth }));
+  assert.ok(desplazado.max > 0 && desplazado.izq > desplazado.max * 0.9, `la fila sigue al cursor (${JSON.stringify(desplazado)})`);
+  await pagina.mouse.move(0, 0);
+
+  // Exportar el índice a Excel, con los códigos.
+  const [descarga] = await Promise.all([pagina.waitForEvent("download"), pagina.getByRole("button", { name: "Exportar a Excel" }).click()]);
+  assert.match(descarga.suggestedFilename(), /^DOCVAULT indice \d{4}-\d{2}-\d{2}\.xlsx$/);
+  const xlsx = unzipSync(new Uint8Array(readFileSync(await descarga.path())));
+  const hoja = strFromU8(xlsx["xl/worksheets/sheet1.xml"]);
+  assert.equal((hoja.match(/<row /g) ?? []).length, 14, "encabezado y 13 documentos");
+  assert.match(hoja, /Código.*Nombre.*Carpeta/s);
+  assert.match(hoja, />DV-000001</);
+  assert.match(hoja, new RegExp(`>${codigoActo}<.*?>acto de venta\\.docx<.*?>Contratos<`, "s"));
+
+  // Los códigos también quedan en la carpeta del usuario (.docvault/codigos.json).
+  const guardados = await pagina.evaluate(async () => {
+    const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
+    const f = await (await (await raiz.getDirectoryHandle(".docvault")).getFileHandle("codigos.json")).getFile();
+    return JSON.parse(await f.text());
+  });
+  assert.equal(Object.keys(guardados.codigos).length, 13);
+  assert.equal(guardados.codigos["Contratos/acto de venta.docx"], codigoActo);
+  assert.equal(guardados.siguiente, 15);
+
   // Al recargar no hay nada nuevo que leer: lo subido ya quedó en el índice.
+  // Un enlace con el código (#DV-000002) abre directamente la ficha de ese documento.
+  await pagina.evaluate(() => history.replaceState(null, "", "?pruebas#DV-000002"));
   await pagina.reload();
   await estadoIndice.waitFor({ timeout: 30_000 });
   assert.match(await estadoIndice.textContent(), /0 nuevos, 0 cambiados, 0 quitados, 13 sin cambios/);
+  await ficha.waitFor();
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), "DV-000002");
+  await pagina.keyboard.press("Escape");
 
   await pagina.getByLabel("Buscar").fill("");
   await pagina.screenshot({ path: resolve(raiz, "e2e/captura.png") });

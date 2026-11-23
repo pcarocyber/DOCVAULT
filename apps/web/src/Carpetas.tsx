@@ -1,33 +1,63 @@
-/** Lista de carpetas con su descripción, y el formulario para crear o editar una. */
-import { useState } from "react";
+/** Las carpetas como tarjetas, y el formulario para crear una o cambiar su descripción. */
+import { useState, type CSSProperties } from "react";
 import { cambiarDescripcion, crearCarpeta, nombreValido, pedirEscritura, type Carpeta } from "./carpeta";
 
 export const EJEMPLO_DESCRIPCION = "facturas, recibos y comprobantes de compra o pago";
+/** La "carpeta" de los documentos que están sueltos en la carpeta principal. */
+export const SIN_CARPETA = "";
+
+const TONOS = ["#0E5E66", "#3A5BA0", "#8A5100", "#6B4FA0", "#2F7A3E", "#A0402F", "#4A6272", "#8A3A6E"];
+export function tonoDe(nombre: string): string {
+  let h = 0;
+  for (const c of nombre) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return TONOS[h % TONOS.length]!;
+}
+
+export interface ResumenCarpeta extends Carpeta { documentos: number; existe: boolean }
 
 interface Props {
   raiz: FileSystemDirectoryHandle;
-  carpetas: Carpeta[];
+  carpetas: ResumenCarpeta[];
+  abierta: string | null;
+  alAbrir: (nombre: string | null) => void;
   alCambiar: () => void;
 }
 
-export function Carpetas({ raiz, carpetas, alCambiar }: Props) {
+export function Carpetas({ raiz, carpetas, abierta, alAbrir, alCambiar }: Props) {
   const [editando, setEditando] = useState<Carpeta | "nueva" | null>(null);
   return (
     <section className="carpetas" aria-label="Carpetas">
-      <div className="carpetas-titulo">
+      <div className="seccion-titulo">
         <h2>Carpetas</h2>
-        <button onClick={() => setEditando("nueva")}>Nueva carpeta</button>
+        <span className="nota">{carpetas.filter((c) => c.existe).length} carpetas · elige una para ver sus documentos</span>
       </div>
-      {carpetas.length === 0 && <p className="nota">Todavía no hay carpetas. Crea una para que la app pueda sugerir dónde guardar cada documento.</p>}
-      <ul className="chips">
-        {carpetas.map((c) => (
-          <li key={c.nombre}>
-            <button className="chip" onClick={() => setEditando(c)} title="Editar descripción">
-              <b>{c.nombre}</b>
-              <span className={c.descripcion ? "" : "falta"}>{c.descripcion || "sin descripción: agrégala para mejores sugerencias"}</span>
-            </button>
-          </li>
-        ))}
+      <ul className="grilla-carpetas">
+        {carpetas.map((c) => {
+          const activa = abierta === c.nombre;
+          const nombre = c.nombre || "Sin carpeta";
+          return (
+            <li key={c.nombre || "·"} className={`tarjeta-carpeta${activa ? " activa" : ""}`} style={{ "--tono": tonoDe(nombre) } as CSSProperties}>
+              <button className="abrir-carpeta" onClick={() => alAbrir(activa ? null : c.nombre)} aria-pressed={activa} aria-label={`Carpeta ${nombre}`}>
+                <span className="pestana" aria-hidden="true" />
+                <b className="nombre-carpeta">{nombre}</b>
+                <span className="cuenta-carpeta">{c.documentos} {c.documentos === 1 ? "documento" : "documentos"}</span>
+                {c.existe
+                  ? <span className={`desc${c.descripcion ? "" : " falta"}`}>{c.descripcion || "Sin descripción: agrégala para mejores sugerencias"}</span>
+                  : <span className="desc">Archivos sueltos en la carpeta principal</span>}
+              </button>
+              {c.existe && (
+                <button className="editar" onClick={() => setEditando(c)} aria-label={`Editar ${c.nombre}`} title="Editar descripción">✎</button>
+              )}
+            </li>
+          );
+        })}
+        <li className="tarjeta-carpeta nueva">
+          <button className="abrir-carpeta" onClick={() => setEditando("nueva")}>
+            <span className="mas" aria-hidden="true">+</span>
+            <b className="nombre-carpeta">Nueva carpeta</b>
+            <span className="desc">Con una descripción, la app sugiere dónde guardar cada archivo</span>
+          </button>
+        </li>
       </ul>
       {editando && (
         <FormCarpeta

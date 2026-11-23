@@ -1,25 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Indice, type FichaDocumento, type Hallazgo } from "@docvault/indice";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Indice, type FichaDocumento } from "@docvault/indice";
+import { leerCodigo } from "@docvault/core";
 import {
   borrarIndiceGuardado, guardarIndice, leerCarpetaRecordada, leerIndiceGuardado,
   pedirAlmacenamientoPersistente, recordarCarpeta,
 } from "./almacen";
 import { archivoPorRuta, elegirCarpeta, leerCarpetas, navegadorCompatible, pedirPermiso, tienePermiso, type Carpeta } from "./carpeta";
-import { Carpetas } from "./Carpetas";
+import { Carpetas, SIN_CARPETA, tonoDe, type ResumenCarpeta } from "./Carpetas";
+import { asignarFaltantes, guardarCodigosEnCarpeta, leerCodigosGuardados } from "./codigos";
+import { Documentos, dudoso, ESTADOS, nombreDe, type Elemento } from "./Documentos";
+import { descargarExcel } from "./exportar";
+import { Ficha } from "./Ficha";
 import { Subir } from "./Subir";
 import { actualizarIndice, type Avance, type ResumenIndexado } from "./indexar";
-import { ColaOcr, CONFIANZA_MINIMA, type AvanceOcr, type ResumenOcr } from "./ocr";
+import { ColaOcr, type AvanceOcr, type ResumenOcr } from "./ocr";
 
 type Pantalla = "cargando" | "incompatible" | "sin-carpeta" | "sin-permiso" | "lista";
 
-const MAX_FILAS = 500;
-const ESTADOS: Record<string, string> = {
-  "listo": "Con texto",
-  "sin texto": "Vacío",
-  "pendiente de OCR": "Espera OCR",
-  "formato no soportado": "Solo nombre",
-  "error": "No se pudo leer",
-};
+const MAX_TARJETAS = 400;
+const RECIENTES = 24;
+
+/** La carpeta de primer nivel de un documento ("" si está suelto en la principal). */
+const carpetaDe = (id: string) => (id.includes("/") ? id.slice(0, id.indexOf("/")) : SIN_CARPETA);
 
 export function App() {
   const [pantalla, setPantalla] = useState<Pantalla>("cargando");
@@ -33,11 +35,14 @@ export function App() {
   const ocupado = useRef(false);
   const [avanceOcr, setAvanceOcr] = useState<AvanceOcr | null>(null);
   const [resumenOcr, setResumenOcr] = useState<ResumenOcr | null>(null);
-  const [abierto, setAbierto] = useState<string | null>(null);
   const cola = useRef<{ cola: ColaOcr; fin: Promise<unknown> } | null>(null);
   const [carpetas, setCarpetas] = useState<Carpeta[]>([]);
   const [subiendo, setSubiendo] = useState<File[] | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
+  const [abierta, setAbierta] = useState<string | null>(null);
+  const [elegido, setElegido] = useState<string | null>(null);
+  const [vista, setVista] = useState<"fila" | "cuadricula">("fila");
+  const [soloCarpeta, setSoloCarpeta] = useState(true);
   const elegirArchivos = useRef<HTMLInputElement>(null);
 
   const releerCarpetas = useCallback(async (h: FileSystemDirectoryHandle) => {
@@ -77,6 +82,7 @@ export function App() {
       await pararOcr();
       const r = await actualizarIndice(h, indice.current, setAvance);
       await guardarIndice(indice.current.exportar());
+      await guardarCodigosEnCarpeta(h, indice.current);
       setDocs(indice.current.listar());
       setResumen(r);
       await releerCarpetas(h);
@@ -92,7 +98,8 @@ export function App() {
   const abrir = useCallback(async (h: FileSystemDirectoryHandle, nueva: boolean) => {
     await pararOcr();
     setResumenOcr(null);
-    setAbierto(null);
+    setElegido(null);
+    setAbierta(null);
     setSubiendo(null);
     setAviso(null);
     if (nueva) {
@@ -132,6 +139,29 @@ export function App() {
     }
   }, [abrir, actualizar, carpeta]);
 
+  // Un enlace con #DV-000123 abre la ficha de ese documento.
+  useEffect(() => {
+    if (pantalla !== "lista") return;
+    const ir = () => {
+      const c = leerCodigo(decodeURIComponent(location.hash.slice(1)));
+      const d = c ? indice.current?.porCodigo(c) : null;
+      if (d) setElegido(d.id);
+    };
+    ir();
+    addEventListener("hashchange", ir);
+    return () => removeEventListener("hashchange", ir);
+  }, [pantalla, docs.length]);
+
+  const porId = useMemo(() => new Map(docs.map((d) => [d.id, d])), [docs]);
+  const ficha = elegido ? porId.get(elegido) ?? null : null;
+
+  // La dirección muestra el código del documento abierto, para guardarla o compartirla.
+  useEffect(() => {
+    if (pantalla !== "lista") return;
+    const hash = ficha?.codigo ? `#${ficha.codigo}` : "";
+    if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname + location.search);
+  }, [ficha, pantalla]);
+
   const onElegir = async () => {
     try { await abrir(await elegirCarpeta(), true); }
     catch (e) { if ((e as DOMException).name !== "AbortError") setError(String(e)); }
@@ -150,13 +180,42 @@ export function App() {
       setError(`No encontré "${ruta}". Puede que lo hayan movido; pulsa Actualizar.`);
     }
   };
+  const cerrarFicha = useCallback(() => setElegido(null), []);
 
-  const hallazgos: Hallazgo[] | null = useMemo(() => {
+  /** Resultados: primero el documento cuyo código se escribió, luego los del texto. */
+  const resultados: { elementos: Elemento[]; exacto: FichaDocumento | null } | null = useMemo(() => {
     const q = consulta.trim();
     if (!q || !indice.current) return null;
-    try { return indice.current.buscar(q, 50); } catch { return []; }
-  }, [consulta, docs]);
-  const porId = useMemo(() => new Map(docs.map((d) => [d.id, d])), [docs]);
+    const c = leerCodigo(q);
+    const exacto = c ? indice.current.porCodigo(c) : null;
+    let hallazgos: Elemento[] = [];
+    try {
+      hallazgos = indice.current.buscar(q, 60)
+        .filter((h) => h.id !== exacto?.id)
+        .flatMap((h) => { const doc = porId.get(h.id); return doc ? [{ doc, fragmento: h.fragmento }] : []; });
+    } catch { /* consulta que el buscador no entiende: sin resultados */ }
+    let elementos = exacto ? [{ doc: exacto }, ...hallazgos] : hallazgos;
+    if (abierta !== null && soloCarpeta) elementos = elementos.filter((e) => carpetaDe(e.doc.id) === abierta);
+    return { elementos, exacto };
+  }, [consulta, porId, abierta, soloCarpeta]);
+
+  const resumenCarpetas: ResumenCarpeta[] = useMemo(() => {
+    const cuenta = new Map<string, number>();
+    for (const d of docs) cuenta.set(carpetaDe(d.id), (cuenta.get(carpetaDe(d.id)) ?? 0) + 1);
+    const lista: ResumenCarpeta[] = carpetas.map((c) => ({ ...c, documentos: cuenta.get(c.nombre) ?? 0, existe: true }));
+    for (const [nombre, n] of cuenta) {
+      if (nombre !== SIN_CARPETA && !carpetas.some((c) => c.nombre === nombre)) lista.push({ nombre, descripcion: "", documentos: n, existe: true });
+    }
+    lista.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+    if (cuenta.get(SIN_CARPETA)) lista.push({ nombre: SIN_CARPETA, descripcion: "", documentos: cuenta.get(SIN_CARPETA)!, existe: false });
+    return lista;
+  }, [docs, carpetas]);
+
+  const enCarpeta = useMemo(() => abierta === null ? [] : docs
+    .filter((d) => carpetaDe(d.id) === abierta)
+    .sort((a, b) => (b.modificado ?? 0) - (a.modificado ?? 0)), [docs, abierta]);
+  const recientes = useMemo(() => [...docs].sort((a, b) => (b.modificado ?? 0) - (a.modificado ?? 0)).slice(0, RECIENTES), [docs]);
+
   const cuenta = useMemo(() => {
     const c: Record<string, number> = {};
     for (const d of docs) {
@@ -170,14 +229,14 @@ export function App() {
 
   if (pantalla === "incompatible") return (
     <main className="centro">
-      <h1>DOCVAULT</h1>
+      <Marca />
       <p>Esta app necesita Google Chrome o Microsoft Edge en una computadora, porque trabaja con una carpeta de tu equipo.</p>
     </main>
   );
 
   if (pantalla === "sin-carpeta" || pantalla === "sin-permiso") return (
     <main className="centro">
-      <h1>DOCVAULT</h1>
+      <Marca />
       <p className="sub">Tu bóveda de documentos. Todo se queda en tu computadora.</p>
       {pantalla === "sin-permiso" && carpeta ? (
         <>
@@ -195,12 +254,12 @@ export function App() {
     </main>
   );
 
-  const lista = hallazgos
-    ? hallazgos.map((h) => ({ ficha: porId.get(h.id), id: h.id, fragmento: h.fragmento }))
-    : docs.slice(0, MAX_FILAS).map((d) => ({ ficha: d, id: d.id, fragmento: "" }));
+  const nombreAbierta = abierta === SIN_CARPETA ? "Sin carpeta" : abierta;
+  const infoAbierta = resumenCarpetas.find((c) => c.nombre === abierta);
 
   return (
-    <main
+    <div
+      className="app"
       onDragOver={(e) => { if (carpeta && !subiendo) e.preventDefault(); }}
       onDrop={(e) => {
         if (!carpeta || subiendo) return;
@@ -209,128 +268,156 @@ export function App() {
         if (f.length) { setAviso(null); setSubiendo(f); }
       }}
     >
-      <header>
-        <div>
-          <h1>DOCVAULT</h1>
-          <p className="sub">Carpeta: <b>{carpeta?.name}</b> · {docs.length.toLocaleString("es-DO")} documentos</p>
+      <header className="barra">
+        <Marca />
+        <div className="buscador">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+          <input
+            type="search" autoFocus placeholder="Busca por nombre, texto o código (DV-000123)"
+            value={consulta} onChange={(e) => setConsulta(e.target.value)} aria-label="Buscar"
+            onKeyDown={(e) => {
+              // Un lector de código de barras escribe el código y pulsa Enter: abre la ficha.
+              if (e.key === "Enter" && resultados?.exacto) setElegido(resultados.exacto.id);
+              if (e.key === "Escape") setConsulta("");
+            }}
+          />
         </div>
         <div className="acciones">
+          <button onClick={() => descargarExcel(docs)} disabled={!docs.length}>Exportar a Excel</button>
           <button className="primario" onClick={() => elegirArchivos.current?.click()} disabled={!!avance || !!subiendo}>Subir archivos</button>
           <input
             ref={elegirArchivos} type="file" multiple hidden aria-label="Elegir archivos para subir"
             onChange={(e) => { const f = [...(e.target.files ?? [])]; e.target.value = ""; if (f.length) { setAviso(null); setSubiendo(f); } }}
           />
-          <button onClick={() => carpeta && actualizar(carpeta)} disabled={!!avance}>Actualizar</button>
-          <button onClick={onElegir} disabled={!!avance}>Cambiar carpeta</button>
         </div>
       </header>
 
-      {avance && (
-        <div className="avance" role="status">
-          {avance.fase === "buscando" && `Buscando archivos… ${avance.hechos}`}
-          {avance.fase === "leyendo" && `Leyendo ${avance.hechos + 1} de ${avance.total}: ${avance.actual}`}
-          {avance.fase === "guardando" && "Guardando el índice…"}
-          {avance.fase === "leyendo" && <progress max={avance.total} value={avance.hechos} />}
+      <main>
+        <div className="contexto">
+          <p>
+            Carpeta <b>{carpeta?.name}</b> · {docs.length.toLocaleString("es-DO")} documentos
+            <span className="cuenta">
+              {" · "}{Object.entries(ESTADOS).filter(([k]) => cuenta[k]).map(([k, v]) => `${v}: ${cuenta[k]}`).join(" · ")}
+              {cuenta.revisar ? ` · Para revisar: ${cuenta.revisar}` : ""}
+            </span>
+          </p>
+          <div className="acciones">
+            <button onClick={() => carpeta && actualizar(carpeta)} disabled={!!avance}>Actualizar</button>
+            <button onClick={onElegir} disabled={!!avance}>Cambiar carpeta</button>
+          </div>
         </div>
-      )}
-      {!avance && resumen && (
-        <p className="estado" role="status">
-          Índice al día en {resumen.segundos.toFixed(1)} s: {resumen.nuevos} nuevos, {resumen.actualizados} cambiados, {resumen.quitados} quitados, {resumen.sinCambios} sin cambios.
-        </p>
-      )}
-      {avanceOcr && (
-        <div className="avance" role="status" aria-label="OCR">
-          Leyendo fotos y escaneos ({avanceOcr.hechos + 1} de {avanceOcr.total}): {avanceOcr.actual}
-          <progress max={avanceOcr.total} value={avanceOcr.hechos} />
-          <span className="nota">Puedes seguir buscando mientras tanto.</span>
-        </div>
-      )}
-      {!avanceOcr && resumenOcr && (
-        <p className="estado" role="status" aria-label="OCR">
-          Fotos y escaneos leídos en {resumenOcr.segundos.toFixed(0)} s: {resumenOcr.leidos} leídos
-          {resumenOcr.dudosos ? `, ${resumenOcr.dudosos} para revisar` : ""}
-          {resumenOcr.vacios ? `, ${resumenOcr.vacios} sin texto` : ""}
-          {resumenOcr.errores ? `, ${resumenOcr.errores} no se pudieron leer` : ""}.
-        </p>
-      )}
-      {error && <p className="error">{error}</p>}
-      {aviso && <p className="estado" role="status">{aviso}</p>}
 
-      {subiendo && carpeta && indice.current && (
-        <Subir
-          raiz={carpeta} indice={indice.current} carpetas={carpetas} archivos={subiendo}
-          alGuardar={async (rutas) => {
-            if (!indice.current) return;
-            await guardarIndice(indice.current.exportar());
-            setDocs(indice.current.listar());
-            await releerCarpetas(carpeta);
-            setAviso(`${rutas.length} ${rutas.length === 1 ? "archivo guardado" : "archivos guardados"} en tu carpeta.`);
-          }}
-          alCerrar={() => setSubiendo(null)}
+        {avance && (
+          <div className="avance" role="status">
+            {avance.fase === "buscando" && `Buscando archivos… ${avance.hechos}`}
+            {avance.fase === "leyendo" && `Leyendo ${avance.hechos + 1} de ${avance.total}: ${avance.actual}`}
+            {avance.fase === "guardando" && "Guardando el índice…"}
+            {avance.fase === "leyendo" && <progress max={avance.total} value={avance.hechos} />}
+          </div>
+        )}
+        {!avance && resumen && (
+          <p className="estado" role="status">
+            Índice al día en {resumen.segundos.toFixed(1)} s: {resumen.nuevos} nuevos, {resumen.actualizados} cambiados, {resumen.quitados} quitados, {resumen.sinCambios} sin cambios.
+            {resumen.movidos > 0 && ` ${resumen.movidos} ${resumen.movidos === 1 ? "movido o renombrado" : "movidos o renombrados"}, con el mismo código.`}
+          </p>
+        )}
+        {avanceOcr && (
+          <div className="avance" role="status" aria-label="OCR">
+            Leyendo fotos y escaneos ({avanceOcr.hechos + 1} de {avanceOcr.total}): {avanceOcr.actual}
+            <progress max={avanceOcr.total} value={avanceOcr.hechos} />
+            <span className="nota">Puedes seguir buscando mientras tanto.</span>
+          </div>
+        )}
+        {!avanceOcr && resumenOcr && (
+          <p className="estado" role="status" aria-label="OCR">
+            Fotos y escaneos leídos en {resumenOcr.segundos.toFixed(0)} s: {resumenOcr.leidos} leídos
+            {resumenOcr.dudosos ? `, ${resumenOcr.dudosos} para revisar` : ""}
+            {resumenOcr.vacios ? `, ${resumenOcr.vacios} sin texto` : ""}
+            {resumenOcr.errores ? `, ${resumenOcr.errores} no se pudieron leer` : ""}.
+          </p>
+        )}
+        {error && <p className="error">{error}</p>}
+        {aviso && <p className="estado" role="status">{aviso}</p>}
+
+        {subiendo && carpeta && indice.current && (
+          <Subir
+            raiz={carpeta} indice={indice.current} carpetas={carpetas} archivos={subiendo}
+            alGuardar={async (rutas) => {
+              const idx = indice.current;
+              if (!idx) return;
+              asignarFaltantes(idx, await leerCodigosGuardados(carpeta));
+              await guardarIndice(idx.exportar());
+              await guardarCodigosEnCarpeta(carpeta, idx);
+              setDocs(idx.listar());
+              await releerCarpetas(carpeta);
+              setAviso(`${rutas.length} ${rutas.length === 1 ? "archivo guardado" : "archivos guardados"} en tu carpeta.`);
+            }}
+            alCerrar={() => setSubiendo(null)}
+          />
+        )}
+
+        {resultados && carpeta ? (
+          <section className="resultados" aria-label="Resultados">
+            <div className="seccion-titulo">
+              <h2>{resultados.elementos.length === 0 ? "Sin resultados" : `${resultados.elementos.length} resultado${resultados.elementos.length === 1 ? "" : "s"}`}</h2>
+              {abierta !== null && (
+                <label className="filtro">
+                  <input type="checkbox" checked={soloCarpeta} onChange={(e) => setSoloCarpeta(e.target.checked)} />
+                  Solo en {nombreAbierta}
+                </label>
+              )}
+            </div>
+            {resultados.exacto && <p className="nota">Código {resultados.exacto.codigo}: {nombreDe(resultados.exacto.id)}. Pulsa Enter para abrir su ficha.</p>}
+            <Documentos raiz={carpeta} elementos={resultados.elementos} vista="cuadricula" elegido={elegido} alElegir={setElegido} etiqueta="Resultados de la búsqueda" />
+          </section>
+        ) : carpeta && (
+          <>
+            <Carpetas raiz={carpeta} carpetas={resumenCarpetas} abierta={abierta} alAbrir={setAbierta} alCambiar={() => releerCarpetas(carpeta)} />
+
+            {abierta !== null ? (
+              <section className="carpeta-abierta" aria-label={`Documentos de ${nombreAbierta}`} style={{ "--tono": tonoDe(nombreAbierta ?? "") } as CSSProperties}>
+                <div className="seccion-titulo">
+                  <div>
+                    <h2>{nombreAbierta} <span className="nota">· {enCarpeta.length} {enCarpeta.length === 1 ? "documento" : "documentos"}</span></h2>
+                    {infoAbierta?.descripcion && <p className="nota">{infoAbierta.descripcion}</p>}
+                  </div>
+                  <div className="vistas" role="group" aria-label="Vista">
+                    <button aria-pressed={vista === "fila"} onClick={() => setVista("fila")}>Fila</button>
+                    <button aria-pressed={vista === "cuadricula"} onClick={() => setVista("cuadricula")}>Cuadrícula</button>
+                  </div>
+                </div>
+                {enCarpeta.length === 0
+                  ? <p className="vacio">Esta carpeta está vacía. Arrastra archivos aquí o usa «Subir archivos».</p>
+                  : <Documentos raiz={carpeta} elementos={enCarpeta.slice(0, MAX_TARJETAS).map((doc) => ({ doc }))} vista={vista} elegido={elegido} alElegir={setElegido} etiqueta={`Documentos de ${nombreAbierta}`} />}
+                {enCarpeta.length > MAX_TARJETAS && <p className="nota">Mostrando los {MAX_TARJETAS} más recientes de {enCarpeta.length}. Usa la búsqueda para encontrar el resto.</p>}
+              </section>
+            ) : recientes.length > 0 && (
+              <section className="carpeta-abierta" aria-label="Recientes">
+                <div className="seccion-titulo"><h2>Recientes</h2><span className="nota">Mueve el cursor sobre la fila para recorrerla</span></div>
+                <Documentos raiz={carpeta} elementos={recientes.map((doc) => ({ doc }))} vista="fila" elegido={elegido} alElegir={setElegido} etiqueta="Documentos recientes" />
+              </section>
+            )}
+          </>
+        )}
+      </main>
+
+      {ficha && carpeta && (
+        <Ficha
+          raiz={carpeta} doc={ficha}
+          texto={() => indice.current?.texto(ficha.id) ?? ""}
+          alAbrir={() => onAbrirDocumento(ficha.id)}
+          alCerrar={cerrarFicha}
         />
       )}
-
-      {carpeta && <Carpetas raiz={carpeta} carpetas={carpetas} alCambiar={() => releerCarpetas(carpeta)} />}
-
-      <input
-        className="buscar" type="search" autoFocus placeholder="Buscar en nombres y en el texto de los documentos"
-        value={consulta} onChange={(e) => setConsulta(e.target.value)} aria-label="Buscar"
-      />
-
-      <p className="cuenta">
-        {Object.entries(ESTADOS).filter(([k]) => cuenta[k]).map(([k, v]) => `${v}: ${cuenta[k]}`).join(" · ")}
-        {cuenta.revisar ? ` · Para revisar: ${cuenta.revisar}` : ""}
-      </p>
-
-      {hallazgos && <p className="cuenta">{hallazgos.length === 0 ? "Sin resultados." : `${hallazgos.length} resultado${hallazgos.length === 1 ? "" : "s"}`}</p>}
-
-      <ul className="docs">
-        {lista.map(({ ficha, id, fragmento }) => (
-          <li key={id} className="fila">
-            <button className="doc" onClick={() => onAbrirDocumento(id)} title="Abrir">
-              <span className="nombre">{id.split("/").at(-1)}</span>
-              <span className="meta">
-                {ficha?.carpeta ? `${ficha.carpeta} · ` : ""}{(ficha?.tipo || "sin extensión").toUpperCase()} · {tamano(ficha?.tamano)}
-                {ficha?.modificado ? ` · ${new Date(ficha.modificado).toLocaleDateString("es-DO")}` : ""}
-                {ficha?.estadoTexto && ficha.estadoTexto !== "listo" ? ` · ${ESTADOS[ficha.estadoTexto]}` : ""}
-                {ficha && dudoso(ficha) ? " · " : ""}
-                {ficha && dudoso(ficha) && <span className="revisar" title="El OCR no está seguro de esta lectura">Revisar lectura</span>}
-              </span>
-              {fragmento && <span className="fragmento">{resaltar(fragmento)}</span>}
-            </button>
-            {ficha?.estadoTexto === "listo" && (
-              <button className="ver" onClick={() => setAbierto(abierto === id ? null : id)} aria-expanded={abierto === id}>
-                {abierto === id ? "Ocultar texto" : "Ver texto"}
-              </button>
-            )}
-            {abierto === id && (
-              <div className="texto">
-                {ficha?.confianza != null && (
-                  <p className="nota">Leído con OCR · confianza {Math.round(ficha.confianza * 100)} %{dudoso(ficha) ? " · compáralo con el original antes de usarlo" : ""}</p>
-                )}
-                <pre>{indice.current?.texto(id) ?? ""}</pre>
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
-      {!hallazgos && docs.length > MAX_FILAS && <p className="cuenta">Mostrando {MAX_FILAS} de {docs.length}. Usa la búsqueda para encontrar el resto.</p>}
-    </main>
+    </div>
   );
 }
 
-function dudoso(d: FichaDocumento): boolean {
-  return d.estadoTexto === "listo" && d.confianza != null && d.confianza < CONFIANZA_MINIMA;
-}
-
-function tamano(b?: number | null): string {
-  if (b == null) return "";
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 ** 2) return `${Math.round(b / 1024)} KB`;
-  return `${(b / 1024 ** 2).toFixed(1)} MB`;
-}
-
-function resaltar(f: string) {
-  return f.split(/(\u0002[^\u0003]*\u0003)/).map((p, i) =>
-    p.startsWith("\u0002") ? <mark key={i}>{p.slice(1, -1)}</mark> : <span key={i}>{p}</span>);
+function Marca() {
+  return (
+    <h1 className="marca">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="7" width="26" height="20" rx="4" /><path d="M3 12h26M11 7l2-3h6l2 3" /></svg>
+      <span>DOCVAULT</span>
+    </h1>
+  );
 }

@@ -18,6 +18,8 @@ export interface DocIndice {
   estadoTexto?: EstadoTexto;
   /** Solo para texto leído con OCR: de 0 a 1. Por debajo de 0,7 conviene revisarlo. */
   confianza?: number;
+  /** Código único del documento (DV-000123). */
+  codigo?: string;
 }
 
 /** Cómo se obtuvo el texto del documento. */
@@ -25,13 +27,13 @@ export type EstadoTexto = "listo" | "sin texto" | "pendiente de OCR" | "formato 
 
 export interface FichaDocumento {
   id: string; titulo: string; carpeta: string | null; ruta: string | null; tamano: number | null;
-  modificado: number | null; tipo: string | null; estadoTexto: EstadoTexto | null; confianza: number | null;
+  modificado: number | null; tipo: string | null; estadoTexto: EstadoTexto | null; confianza: number | null; codigo: string | null;
 }
 
 /** `fragmento` marca las palabras halladas entre los caracteres \u0002 y \u0003. */
 export interface Hallazgo { id: string; titulo: string; fragmento: string; puntaje: number }
 
-const VERSION_ESQUEMA = 3;
+const VERSION_ESQUEMA = 4;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Sqlite = any;
@@ -48,10 +50,13 @@ function crearEsquema(db: Db) {
   db.exec(`
     DROP TABLE IF EXISTS documentos;
     DROP TABLE IF EXISTS busqueda;
+    DROP TABLE IF EXISTS ajustes;
     CREATE TABLE documentos (
       id TEXT PRIMARY KEY, titulo TEXT, carpeta TEXT, ruta TEXT,
-      tamano INTEGER, modificado INTEGER, tipo TEXT, estado_texto TEXT, confianza REAL
+      tamano INTEGER, modificado INTEGER, tipo TEXT, estado_texto TEXT, confianza REAL, codigo TEXT
     );
+    CREATE UNIQUE INDEX documentos_codigo ON documentos(codigo);
+    CREATE TABLE ajustes (clave TEXT PRIMARY KEY, valor TEXT);
     CREATE VIRTUAL TABLE busqueda USING fts5(
       id UNINDEXED, titulo, texto, tokenize = 'unicode61 remove_diacritics 2'
     );
@@ -77,13 +82,19 @@ export class Indice {
           sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE | sqlite3.capi.SQLITE_DESERIALIZE_RESIZEABLE,
         );
         db.checkRc(rc);
-        const version = db.selectValue("PRAGMA user_version");
-        if (version === 2) {
-          // entrega 1 → entrega 2: solo se agrega la columna de confianza del OCR
-          db.exec(`ALTER TABLE documentos ADD COLUMN confianza REAL; PRAGMA user_version = ${VERSION_ESQUEMA};`);
+        let version = db.selectValue("PRAGMA user_version") as number;
+        // Índices de entregas anteriores: se actualizan sin volver a leer la carpeta.
+        if (version === 2) { db.exec("ALTER TABLE documentos ADD COLUMN confianza REAL"); version = 3; }
+        if (version === 3) {
+          db.exec(`ALTER TABLE documentos ADD COLUMN codigo TEXT;
+                   CREATE UNIQUE INDEX documentos_codigo ON documentos(codigo);
+                   CREATE TABLE ajustes (clave TEXT PRIMARY KEY, valor TEXT);`);
+          version = 4;
+        }
+        if (version === VERSION_ESQUEMA) {
+          db.exec(`PRAGMA user_version = ${VERSION_ESQUEMA}`);
           return new Indice(sqlite3, db);
         }
-        if (version === VERSION_ESQUEMA) return new Indice(sqlite3, db);
         db.close();
       } catch {
         // índice dañado: se reconstruye desde la carpeta
@@ -105,9 +116,10 @@ export class Indice {
     try {
       for (const d of docs) {
         this.db.exec({
-          sql: `INSERT OR REPLACE INTO documentos (id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto, confianza)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          bind: [d.id, d.titulo, d.carpeta ?? null, d.ruta ?? null, d.tamano ?? null, d.modificado ?? null, d.tipo ?? null, d.estadoTexto ?? null, d.confianza ?? null],
+          sql: `INSERT OR REPLACE INTO documentos (id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto, confianza, codigo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        coalesce(?, (SELECT codigo FROM documentos WHERE id = ?)))`,
+          bind: [d.id, d.titulo, d.carpeta ?? null, d.ruta ?? null, d.tamano ?? null, d.modificado ?? null, d.tipo ?? null, d.estadoTexto ?? null, d.confianza ?? null, d.codigo ?? null, d.id],
         });
         this.db.exec({ sql: "DELETE FROM busqueda WHERE id = ?", bind: [d.id] });
         this.db.exec({ sql: "INSERT INTO busqueda (id, titulo, texto) VALUES (?, ?, ?)", bind: [d.id, d.titulo, d.texto] });
@@ -132,7 +144,7 @@ export class Indice {
   listar(): FichaDocumento[] {
     const filas: FichaDocumento[] = [];
     this.db.exec({
-      sql: `SELECT id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto, confianza
+      sql: `SELECT id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto, confianza, codigo
             FROM documentos ORDER BY coalesce(ruta, id)`,
       rowMode: "object",
       callback: (f: FichaDocumento) => { filas.push({ ...f }); },
@@ -177,6 +189,37 @@ export class Indice {
       this.db.exec("ROLLBACK");
       throw e;
     }
+  }
+
+  /** El documento con ese código (DV-000123), o null. */
+  porCodigo(codigo: string): FichaDocumento | null {
+    let f: FichaDocumento | null = null;
+    this.db.exec({
+      sql: `SELECT id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto, confianza, codigo
+            FROM documentos WHERE codigo = ?`,
+      bind: [codigo], rowMode: "object", callback: (x: FichaDocumento) => { f = { ...x }; },
+    });
+    return f;
+  }
+
+  /** Pone o cambia el código de documentos ya indexados. */
+  ponerCodigos(codigos: Map<string, string>): void {
+    this.db.exec("BEGIN");
+    try {
+      for (const [id, codigo] of codigos) this.db.exec({ sql: "UPDATE documentos SET codigo = ? WHERE id = ?", bind: [codigo, id] });
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  ajuste(clave: string): string | null {
+    return (this.db.selectValue("SELECT valor FROM ajustes WHERE clave = ?", [clave]) as string | undefined) ?? null;
+  }
+
+  ponerAjuste(clave: string, valor: string): void {
+    this.db.exec({ sql: "INSERT OR REPLACE INTO ajustes VALUES (?, ?)", bind: [clave, valor] });
   }
 
   contar(): number {

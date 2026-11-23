@@ -4,7 +4,8 @@
  */
 import type { DocIndice, EstadoTexto, Indice } from "@docvault/indice";
 import { configurarMotores, extraerTextoPdf } from "@docvault/core/navegador";
-import { extraerTextoDocx, extraerTextoXlsx } from "@docvault/core";
+import { detectarMovidos, extraerTextoDocx, extraerTextoXlsx } from "@docvault/core";
+import { asignarFaltantes, leerCodigosGuardados } from "./codigos";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { recorrer } from "./carpeta";
 
@@ -16,7 +17,10 @@ const IMAGENES = new Set(["jpg", "jpeg", "png", "tif", "tiff", "webp", "bmp", "g
 const MAX_TEXTO = 1_000_000;
 
 export interface Avance { fase: "buscando" | "leyendo" | "guardando"; hechos: number; total: number; actual?: string }
-export interface ResumenIndexado { nuevos: number; actualizados: number; quitados: number; sinCambios: number; errores: number; segundos: number }
+export interface ResumenIndexado {
+  nuevos: number; movidos: number; actualizados: number; quitados: number; sinCambios: number;
+  errores: number; codigosNuevos: number; segundos: number;
+}
 
 export function extension(nombre: string): string {
   const i = nombre.lastIndexOf(".");
@@ -50,12 +54,14 @@ export async function leerTexto(archivo: File): Promise<{ texto: string; estado:
 }
 
 /** La ficha del índice para un archivo de la carpeta. */
-export function fichaDe(ruta: string, archivo: File, texto: string, estado: EstadoTexto, confianza?: number | null): DocIndice {
+export function fichaDe(
+  ruta: string, archivo: File, texto: string, estado: EstadoTexto, confianza?: number | null, codigo?: string | null,
+): DocIndice {
   const sub = ruta.includes("/") ? ruta.slice(0, ruta.lastIndexOf("/")) : null;
   return {
     id: ruta, ruta, titulo: ruta, texto, carpeta: sub ?? undefined,
     tamano: archivo.size, modificado: archivo.lastModified, tipo: extension(archivo.name), estadoTexto: estado,
-    confianza: confianza ?? undefined,
+    confianza: confianza ?? undefined, codigo: codigo ?? undefined,
   };
 }
 
@@ -71,8 +77,16 @@ export async function actualizarIndice(
     return !p || p.tamano !== a.tamano || p.modificado !== a.modificado;
   });
   const enCarpeta = new Set(archivos.map((a) => a.ruta));
-  const quitados = [...previos.keys()].filter((id) => !enCarpeta.has(id));
-  if (quitados.length) indice.quitar(quitados);
+  const quitados = [...previos.values()].filter((d) => !enCarpeta.has(d.id));
+
+  // Un archivo que se movió o se renombró fuera de la app conserva su código,
+  // y si no cambió su contenido, también el texto ya leído (sin repetir el OCR).
+  const movidos = detectarMovidos(
+    porLeer.filter((a) => !previos.has(a.ruta)),
+    quitados.map((d) => ({ ruta: d.id, nombre: d.id.split("/").at(-1)!, tamano: d.tamano ?? -1, modificado: d.modificado ?? -1, codigo: d.codigo })),
+  );
+  const textoMovido = new Map([...movidos].map(([, q]) => [q.ruta, indice.texto(q.ruta) ?? ""]));
+  if (quitados.length) indice.quitar(quitados.map((d) => d.id));
 
   let errores = 0;
   const lote: DocIndice[] = [];
@@ -80,17 +94,25 @@ export async function actualizarIndice(
     alAvanzar({ fase: "leyendo", hechos: i, total: porLeer.length, actual: a.ruta });
     let archivo: File;
     try { archivo = await a.handle.getFile(); } catch { errores++; continue; }
-    const { texto, estado } = await leerTexto(archivo);
-    if (estado === "error") errores++;
-    lote.push(fichaDe(a.ruta, archivo, texto, estado));
+    const antes = movidos.get(a.ruta);
+    const previo = antes ? previos.get(antes.ruta) : undefined;
+    if (previo && previo.modificado === a.modificado && previo.estadoTexto) {
+      lote.push(fichaDe(a.ruta, archivo, textoMovido.get(previo.id) ?? "", previo.estadoTexto, previo.confianza, previo.codigo));
+    } else {
+      const { texto, estado } = await leerTexto(archivo);
+      if (estado === "error") errores++;
+      lote.push(fichaDe(a.ruta, archivo, texto, estado, null, antes?.codigo));
+    }
     if (lote.length >= 25) indice.agregar(lote.splice(0));
   }
   if (lote.length) indice.agregar(lote);
   alAvanzar({ fase: "guardando", hechos: porLeer.length, total: porLeer.length });
+  const codigosNuevos = asignarFaltantes(indice, await leerCodigosGuardados(raiz));
 
   const nuevos = porLeer.filter((a) => !previos.has(a.ruta)).length;
   return {
-    nuevos, actualizados: porLeer.length - nuevos, quitados: quitados.length,
-    sinCambios: archivos.length - porLeer.length, errores, segundos: (performance.now() - t0) / 1000,
+    nuevos: nuevos - movidos.size, movidos: movidos.size, actualizados: porLeer.length - nuevos,
+    quitados: quitados.length - movidos.size, sinCambios: archivos.length - porLeer.length, errores,
+    codigosNuevos, segundos: (performance.now() - t0) / 1000,
   };
 }
