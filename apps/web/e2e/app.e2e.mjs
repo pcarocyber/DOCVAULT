@@ -7,15 +7,21 @@
  * (carpetas, fila de documentos, ficha con QR y código de barras), el código único
  * de cada documento, la búsqueda por código y la exportación a Excel. Y desde la
  * entrega 4: fechas de vencimiento (detectar, confirmar, avisar) y duplicados.
+ * Desde la entrega 5: imprimir con código, etiqueta, lector USB y cámara.
  * Uso: npm run e2e  (desde la raíz del repositorio)
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { preview } from "vite";
 import { chromium } from "playwright";
 import { unzipSync, strFromU8 } from "fflate";
+import { PDFDocument } from "pdf-lib";
+import jsQR from "jsqr";
+import qrcode from "qrcode-generator";
 
 const raiz = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,6 +42,30 @@ function pdfConTexto(texto) {
   pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${pos.map((p) => `${String(p).padStart(10, "0")} 00000 n \n`).join("")}`;
   pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return pdf;
+}
+
+/** Lee el QR de la primera página de un PDF: la dibuja con pdftoppm y la analiza con jsQR. */
+function leerQrDePdf(ruta) {
+  const dir = mkdtempSync(resolve(tmpdir(), "dv-qr-"));
+  execFileSync("pdftoppm", ["-r", "150", "-f", "1", "-l", "1", ruta, resolve(dir, "p")]);
+  const ppm = readFileSync(resolve(dir, readdirSync(dir).find((n) => n.endsWith(".ppm"))));
+  const cab = /^P6\s+(\d+)\s+(\d+)\s+255\s/.exec(ppm.subarray(0, 40).toString("latin1"));
+  const [ancho, alto] = [Number(cab[1]), Number(cab[2])];
+  const rgba = new Uint8ClampedArray(ancho * alto * 4);
+  for (let i = 0, j = cab[0].length; i < ancho * alto; i++, j += 3) {
+    rgba[i * 4] = ppm[j]; rgba[i * 4 + 1] = ppm[j + 1]; rgba[i * 4 + 2] = ppm[j + 2]; rgba[i * 4 + 3] = 255;
+  }
+  return jsQR(rgba, ancho, alto)?.data ?? null;
+}
+
+/** Los cuadritos de un QR, para la cámara de mentira. */
+function modulosQr(texto) {
+  const qr = qrcode(0, "M");
+  qr.addData(texto); qr.make();
+  const n = qr.getModuleCount();
+  let celdas = "";
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) celdas += qr.isDark(r, c) ? "1" : "0";
+  return { n, celdas };
 }
 
 /** Archivos reales de e2e/datos (foto, escaneo, Word, Excel), en base64 para pasarlos al navegador. */
@@ -68,6 +98,25 @@ await pagina.addInitScript(() => {
     static async requestPermission() { this.permission = "granted"; return "granted"; }
     constructor(titulo, op) { window.__avisos.push({ titulo, cuerpo: op?.body ?? "" }); }
     close() {}
+  };
+});
+// Cámara de mentira: un video que muestra el QR puesto en window.__qrFalso.
+await pagina.addInitScript(() => {
+  navigator.mediaDevices.getUserMedia = async () => {
+    const c = document.createElement("canvas");
+    c.width = 640; c.height = 480;
+    const ctx = c.getContext("2d");
+    const pintar = () => {
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 640, 480);
+      const m = window.__qrFalso;
+      if (!m) return;
+      const t = Math.floor(360 / (m.n + 8)), x0 = (640 - m.n * t) / 2, y0 = (480 - m.n * t) / 2;
+      ctx.fillStyle = "#000";
+      for (let i = 0; i < m.celdas.length; i++) if (m.celdas[i] === "1") ctx.fillRect(x0 + (i % m.n) * t, y0 + Math.floor(i / m.n) * t, t, t);
+    };
+    pintar();
+    setInterval(pintar, 100);
+    return c.captureStream(10);
   };
 });
 // El modelo de IA básica se sirve desde bench/modelos (ver motores.ts); sin esa copia,
@@ -421,6 +470,78 @@ try {
   assert.equal(Object.keys(guardados.codigos).length, 13);
   assert.equal(guardados.codigos["Contratos/acto de venta.docx"], codigoActo);
   assert.equal(guardados.siguiente, 15);
+
+  // Entrega 5: descargar el documento con su código estampado al pie.
+  const codigoArr = guardados.codigos["Contratos/arrendamiento local.pdf"];
+  await pagina.getByLabel("Buscar").fill(codigoArr);
+  await pagina.getByLabel("Buscar").press("Enter");
+  await ficha.waitFor();
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoArr, "Enter en el buscador con un código abre su ficha");
+  const imprimir = ficha.getByRole("region", { name: "Imprimir con código" });
+  await imprimir.scrollIntoViewIfNeeded();
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-imprimir.png") });
+  const [conCodigo] = await Promise.all([pagina.waitForEvent("download"), imprimir.getByRole("button", { name: "Descargar con código" }).click()]);
+  assert.equal(conCodigo.suggestedFilename(), `arrendamiento local ${codigoArr}.pdf`);
+  const pdfEstampado = await PDFDocument.load(readFileSync(await conCodigo.path()));
+  assert.equal(pdfEstampado.getPageCount(), 1);
+  assert.deepEqual(pdfEstampado.getPage(0).getMediaBox(), { x: 0, y: -90, width: 612, height: 882 }, "la página se alarga para la franja");
+  assert.equal(leerQrDePdf(await conCodigo.path()), codigoArr, "el QR impreso se puede leer");
+  // Imprimir la etiqueta abre el PDF en otra pestaña. Aquí se anota la pestaña en vez de
+  // abrirla (Chrome sin pantalla no muestra PDF) y se revisa lo que iba a mostrar.
+  await pagina.evaluate(() => { window.__abiertas = []; window.open = (u) => { window.__abiertas.push(u); return {}; }; });
+  await imprimir.getByRole("button", { name: "Imprimir etiqueta" }).click();
+  await imprimir.getByText("La etiqueta (7 × 3 cm) se abrió").waitFor();
+  const bytesEtiqueta = await pagina.evaluate(async () => [...new Uint8Array(await (await fetch(window.__abiertas[0])).arrayBuffer())]);
+  const rutaEtiqueta = resolve(mkdtempSync(resolve(tmpdir(), "dv-et-")), "etiqueta.pdf");
+  writeFileSync(rutaEtiqueta, Uint8Array.from(bytesEtiqueta));
+  const pdfEtiqueta = await PDFDocument.load(readFileSync(rutaEtiqueta));
+  assert.deepEqual([pdfEtiqueta.getPage(0).getWidth(), pdfEtiqueta.getPage(0).getHeight()], [198, 85], "etiqueta de 7 × 3 cm");
+  assert.equal(leerQrDePdf(rutaEtiqueta), codigoArr, "el QR de la etiqueta se puede leer");
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+
+  // Una foto también se descarga con código: queda en una hoja carta con la franja.
+  await pagina.getByLabel("Buscar").fill(codigoRecibo);
+  await pagina.getByLabel("Buscar").press("Enter");
+  await ficha.waitFor();
+  const [fotoConCodigo] = await Promise.all([pagina.waitForEvent("download"), imprimir.getByRole("button", { name: "Descargar con código" }).click()]);
+  await fotoConCodigo.saveAs(resolve(raiz, "e2e/captura-estampado.pdf"));
+  const pdfFoto = await PDFDocument.load(readFileSync(await fotoConCodigo.path()));
+  assert.equal(pdfFoto.getPage(0).getHeight(), 882);
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoRecibo);
+  assert.equal(leerQrDePdf(await fotoConCodigo.path()), codigoRecibo);
+  // Un Word no se puede estampar: solo se ofrece la etiqueta.
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+  await pagina.getByLabel("Buscar").fill(codigoActo);
+  await pagina.getByLabel("Buscar").press("Enter");
+  await ficha.waitFor();
+  assert.equal(await imprimir.getByRole("button", { name: "Descargar con código" }).count(), 0);
+  assert.equal(await imprimir.getByRole("button", { name: "Imprimir etiqueta" }).count(), 1);
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+
+  // Un lector USB escribe el código muy rápido y pulsa Enter, fuera del buscador:
+  // se abre la ficha y su carpeta.
+  await pagina.getByLabel("Buscar").fill("");
+  await pagina.evaluate(() => document.activeElement?.blur());
+  await pagina.keyboard.type(`${codigoArr}\n`);
+  await ficha.waitFor();
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoArr, "el lector USB abre la ficha");
+  await pagina.getByRole("list", { name: "Documentos de Contratos" }).waitFor();
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+  await pagina.getByRole("button", { name: "Carpeta Contratos" }).click();
+
+  // Escanear con la cámara: primero un código que no es de la bóveda, luego uno que sí.
+  await pagina.evaluate((m) => { window.__qrFalso = m; }, modulosQr("DV-999999"));
+  await pagina.getByRole("button", { name: "Escanear" }).click();
+  const escaner = pagina.getByRole("dialog", { name: "Escanear código" });
+  await escaner.getByText("DV-999999 no está en esta bóveda.").waitFor({ timeout: 15_000 });
+  await pagina.waitForTimeout(300); // que termine de aparecer
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-escanear.png") });
+  await pagina.evaluate((m) => { window.__qrFalso = m; }, modulosQr(codigoRecibo));
+  await ficha.waitFor({ timeout: 15_000 });
+  assert.equal(await escaner.count(), 0, "el escáner se cierra al leer el código");
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoRecibo, "la cámara abre la ficha");
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+  console.log("  Imprimir con código, etiqueta, lector USB y cámara: bien.");
 
   // Al recargar no hay nada nuevo que leer: lo subido ya quedó en el índice.
   // Un enlace con el código (#DV-000002) abre directamente la ficha de ese documento.

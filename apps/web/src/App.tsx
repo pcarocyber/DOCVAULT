@@ -3,6 +3,7 @@ import { Indice, type EstadoVence, type FichaDocumento } from "@docvault/indice"
 import { duplicadosEnBoveda, leerCodigo, UMBRALES_DUPLICADOS, type Par } from "@docvault/core";
 import { Alertas } from "./Alertas";
 import { Comparar } from "./Comparar";
+import { Escanear } from "./Escanear";
 import { Papelera } from "./PanelPapelera";
 import { borrarParaSiempre, leerPapelera, moverAPapelera, recuperar, type EnPapelera } from "./papelera";
 import { avisarVencimientos } from "./avisos";
@@ -54,6 +55,7 @@ export function App() {
   const [comparando, setComparando] = useState<Par | null>(null);
   const [papelera, setPapelera] = useState<EnPapelera[]>([]);
   const [verPapelera, setVerPapelera] = useState(false);
+  const [escaneando, setEscaneando] = useState(false);
   const cacheHuellas = useRef(new Map<string, { clave: string; huella: Set<string>; firma: Uint32Array }>());
 
   /** Busca duplicados en toda la bóveda (sin los pares que el usuario dijo que no lo son). */
@@ -218,6 +220,42 @@ export function App() {
   };
   const cerrarFicha = useCallback(() => setElegido(null), []);
 
+  /** Un código escaneado o escrito: abre la ficha del documento y muestra su carpeta. */
+  const abrirPorCodigo = useCallback((codigo: string): boolean => {
+    const d = indice.current?.porCodigo(codigo);
+    if (!d) return false;
+    setEscaneando(false);
+    setConsulta("");
+    setAbierta(carpetaDe(d.id));
+    setElegido(d.id);
+    return true;
+  }, []);
+
+  // Un lector USB "escribe" el código muy rápido y pulsa Enter. Si eso pasa fuera del
+  // buscador (en cualquier parte de la app), igual se abre el documento.
+  useEffect(() => {
+    if (pantalla !== "lista") return;
+    let buffer = "";
+    let ultima = 0;
+    const tecla = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      const ahora = performance.now();
+      if (ahora - ultima > 60) buffer = "";
+      ultima = ahora;
+      if (e.key === "Enter") {
+        const c = buffer.length >= 6 ? leerCodigo(buffer) : null;
+        buffer = "";
+        if (c && abrirPorCodigo(c)) e.preventDefault();
+        else if (c) setAviso(`${c} no está en esta bóveda.`);
+        return;
+      }
+      if (e.key.length === 1) buffer += e.key;
+    };
+    addEventListener("keydown", tecla);
+    return () => removeEventListener("keydown", tecla);
+  }, [pantalla, abrirPorCodigo]);
+
   // Mientras la app está abierta, revisa los vencimientos cada hora (por si cambia el día).
   useEffect(() => {
     if (pantalla !== "lista") return;
@@ -381,12 +419,16 @@ export function App() {
             value={consulta} onChange={(e) => setConsulta(e.target.value)} aria-label="Buscar"
             onKeyDown={(e) => {
               // Un lector de código de barras escribe el código y pulsa Enter: abre la ficha.
-              if (e.key === "Enter" && resultados?.exacto) setElegido(resultados.exacto.id);
+              if (e.key === "Enter" && resultados?.exacto?.codigo) abrirPorCodigo(resultados.exacto.codigo);
               if (e.key === "Escape") setConsulta("");
             }}
           />
         </div>
         <div className="acciones">
+          <button onClick={() => setEscaneando(true)} disabled={!docs.length} title="Escanea el código impreso con la cámara de la computadora">
+            <svg className="icono" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M17 8v8" /></svg>
+            Escanear
+          </button>
           <button onClick={() => descargarExcel(docs)} disabled={!docs.length}>Exportar a Excel</button>
           <button className="primario" onClick={() => elegirArchivos.current?.click()} disabled={!!avance || !!subiendo}>Subir archivos</button>
           <input
@@ -521,6 +563,8 @@ export function App() {
           </>
         )}
       </main>
+
+      {escaneando && <Escanear alLeer={abrirPorCodigo} alCerrar={() => setEscaneando(false)} />}
 
       {comparando && carpeta && indice.current && porId.get(comparando.a) && porId.get(comparando.b) && (
         <Comparar

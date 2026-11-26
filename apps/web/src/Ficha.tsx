@@ -5,6 +5,8 @@ import { cuandoVence, fechaLarga, fechaValida, hoyIso } from "@docvault/core";
 import { BarrasSvg, QrSvg } from "./Codigo";
 import { claseEtapa, dudoso, ESTADOS, fecha, nombreDe, tamano } from "./Documentos";
 import { Miniatura } from "./Miniatura";
+import { archivoPorRuta } from "./carpeta";
+import { abrirParaImprimir, descargar, estampar, etiqueta, nombreConCodigo, nombreSeguro, sePuedeEstampar } from "./estampar";
 
 interface Props {
   raiz: FileSystemDirectoryHandle;
@@ -83,7 +85,7 @@ export function Ficha({ raiz, doc, texto, alAbrir, alCerrar, alCambiarVence }: P
             <pre>{texto()}</pre>
           </div>
         )}
-        <p className="nota pie-ficha">Imprimir o descargar con el código estampado llega en la entrega 5.</p>
+        {doc.codigo && <Imprimir raiz={raiz} doc={doc} />}
       </aside>
     </>
   );
@@ -165,6 +167,44 @@ function Vence({ doc, alCambiar }: { doc: FichaDocumento; alCambiar: Props["alCa
         </div>
       )}
       {error && <p className="error">{error}</p>}
+    </section>
+  );
+}
+
+/** Descargar o imprimir el documento con su código, o solo la etiqueta. */
+function Imprimir({ raiz, doc }: { raiz: FileSystemDirectoryHandle; doc: FichaDocumento }) {
+  const [ocupado, setOcupado] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+  useEffect(() => { setAviso(null); }, [doc.id]);
+  const codigo = doc.codigo!;
+  const nombre = nombreDe(doc.id);
+  const hacer = async (que: string, f: () => Promise<void>) => {
+    setOcupado(que); setAviso(null);
+    try { await f(); }
+    catch (e) { setAviso(`No se pudo preparar el PDF: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setOcupado(null); }
+  };
+  const conCodigo = async () => estampar(await archivoPorRuta(raiz, doc.id), doc.tipo ?? "", codigo);
+  const puede = sePuedeEstampar(doc.tipo);
+  return (
+    <section className="imprimir" aria-label="Imprimir con código">
+      <h3>Imprimir con código</h3>
+      {puede
+        ? <p className="nota">Se agrega al pie de la primera página una franja con el QR, el código de barras y {codigo}. Tu archivo original no cambia.</p>
+        : <p className="nota">A los archivos {(doc.tipo || "sin extensión").toUpperCase()} no les puedo poner la franja. Imprime la etiqueta y pégala en el papel, o guárdalo como PDF y súbelo.</p>}
+      <div className="acciones">
+        {puede && <button disabled={!!ocupado} onClick={() => hacer("descargar", async () => descargar(await conCodigo(), nombreConCodigo(nombre, codigo)))}>{ocupado === "descargar" ? "Preparando…" : "Descargar con código"}</button>}
+        {puede && <button disabled={!!ocupado} onClick={() => hacer("imprimir", async () => {
+          if (!abrirParaImprimir(await conCodigo())) setAviso("Chrome bloqueó la ventana nueva. Permite las ventanas emergentes de esta página o usa «Descargar con código».");
+          else setAviso("Se abrió en una pestaña nueva: imprime desde ahí con Cmd + P (Ctrl + P en Windows).");
+        })}>{ocupado === "imprimir" ? "Preparando…" : "Imprimir con código"}</button>}
+        <button disabled={!!ocupado} onClick={() => hacer("etiqueta", async () => {
+          const b = await etiqueta(codigo, nombre);
+          if (!abrirParaImprimir(b)) descargar(b, nombreSeguro(`Etiqueta ${codigo}.pdf`));
+          else setAviso("La etiqueta (7 × 3 cm) se abrió en una pestaña nueva, lista para imprimir.");
+        })}>{ocupado === "etiqueta" ? "Preparando…" : "Imprimir etiqueta"}</button>
+      </div>
+      {aviso && <p className="nota" role="status">{aviso}</p>}
     </section>
   );
 }
