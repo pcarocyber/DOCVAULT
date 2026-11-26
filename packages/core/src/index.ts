@@ -7,3 +7,4 @@ export * from "./carpeta";
 export * from "./resumen";
 export * from "./oficina";
 export * from "./codigos";
+export * from "./vencimientos";

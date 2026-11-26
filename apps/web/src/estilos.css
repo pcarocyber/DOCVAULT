@@ -155,3 +155,58 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
   .grilla-carpetas { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .subidas li { grid-template-columns: 1fr; } .subidas .elegir { grid-column: 1; grid-row: auto; }
 }
+
+/* Entrega 4: vencimientos y duplicados */
+:root { --rojo: #b42318; --rojo-bg: #fde8e6; --ambar: #8a5100; --ambar-bg: #fff1dc; --azul: #1d4f91; --azul-bg: #e5eefb; --verde: #1e6b3a; --verde-bg: #e3f4e8; }
+@media (prefers-color-scheme: dark) {
+  :root { --rojo: #ff8a80; --rojo-bg: #3d1714; --ambar: #ffc069; --ambar-bg: #3a2a10; --azul: #9cc3ff; --azul-bg: #15253d; --verde: #8fd6a6; --verde-bg: #14301e; }
+}
+.alertas { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin: 18px 0 4px; }
+.alerta { background: var(--card); border: 1px solid var(--line); border-radius: var(--radio); padding: 14px 16px; box-shadow: var(--sombra); min-width: 0; }
+.alerta-cabeza { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.alerta-cabeza h2 { font-size: 16px; margin: 0; }
+.alerta-cabeza button { font-size: 13px; padding: 5px 10px; }
+.alerta .nota { margin: 4px 0; }
+.lista-alertas { list-style: none; margin: 0; padding: 0; }
+.lista-alertas button { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 10px; align-items: center; text-align: left; border: none; border-radius: 10px; padding: 7px 8px; background: transparent; }
+.lista-alertas button:hover:not(:disabled) { background: var(--card-2); }
+.lista-alertas .chip-vence { grid-row: 1 / span 2; }
+.lista-alertas .nombre { font-size: 14px; }
+.lista-alertas .meta { grid-column: 2; }
+.confirmar p { font-size: 13px; margin: 10px 0 4px; color: var(--sub); }
+.confirmar p b { color: var(--fg); }
+.chip-vence, .chip-dup { display: inline-block; white-space: nowrap; border-radius: 999px; padding: 1px 9px; font-size: 11px; font-weight: 600; background: var(--card-2); color: var(--sub); border: 1px solid var(--line); }
+.chip-vence.vencido { background: var(--rojo-bg); color: var(--rojo); border-color: transparent; }
+.chip-vence.semana { background: var(--ambar-bg); color: var(--ambar); border-color: transparent; }
+.chip-vence.mes { background: var(--azul-bg); color: var(--azul); border-color: transparent; }
+.chip-vence.lejos { background: var(--verde-bg); color: var(--verde); border-color: transparent; }
+.chip-vence.confirmar { background: var(--ambar-bg); color: var(--ambar); border: 1px dashed var(--ambar); }
+.chip-dup { background: var(--rojo-bg); color: var(--rojo); border-color: transparent; }
+.chip-dup.parecido { background: var(--azul-bg); color: var(--azul); }
+.lista-dup { list-style: none; margin: 0; padding: 0; }
+.lista-dup li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); align-items: center; }
+.lista-dup li:last-child { border-bottom: none; }
+.lista-dup .chip-dup { justify-self: start; }
+.lista-dup .par { grid-column: 1; font-size: 14px; overflow-wrap: anywhere; }
+.lista-dup .meta { grid-column: 1; white-space: normal; }
+.lista-dup .ignorar { grid-column: 2; grid-row: 1 / span 3; font-size: 12px; padding: 4px 9px; }
+button.enlace { padding: 0; font-size: inherit; }
+.alerta > button.enlace { margin-top: 8px; font-size: 13px; }
+
+.vence { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 16px; background: var(--card-2); }
+.vence-cabeza { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.vence h3 { margin: 0; font-size: 14px; }
+.vence p { margin: 6px 0; font-size: 14px; }
+.vence .nota { font-size: 12px; }
+.vence .acciones { margin-top: 8px; }
+.vence .acciones button { font-size: 13px; padding: 6px 11px; }
+.vence-fecha { font-weight: 600; }
+.vence-fecha .nota { font-weight: 400; }
+.vence-editar label { display: block; font-size: 13px; color: var(--sub); margin-top: 6px; }
+.vence-editar input { display: block; font: inherit; padding: 7px 10px; margin-top: 4px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+
+.aviso-dup { grid-column: 1 / -1; background: var(--azul-bg); border-radius: 10px; padding: 8px 12px; margin-top: 6px; font-size: 13px; }
+.aviso-dup.exacto { background: var(--rojo-bg); }
+.aviso-dup p { margin: 2px 0; }
+.panel .aviso-dup label.marcar { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; font-size: 13px; }
+.panel .aviso-dup label.marcar input { display: inline; width: auto; margin: 0; accent-color: var(--acc); }

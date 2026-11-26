@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Indice, type FichaDocumento } from "@docvault/indice";
-import { leerCodigo } from "@docvault/core";
+import { Indice, type EstadoVence, type FichaDocumento } from "@docvault/indice";
+import { duplicadosEnBoveda, leerCodigo, UMBRALES_DUPLICADOS, type Par } from "@docvault/core";
+import { Alertas } from "./Alertas";
+import { avisarVencimientos } from "./avisos";
+import { aplicarGuardados, guardarDecision, guardarVencimientosEnCarpeta, leerVencimientosGuardados } from "./vencimientos";
 import {
   borrarIndiceGuardado, guardarIndice, leerCarpetaRecordada, leerIndiceGuardado,
   pedirAlmacenamientoPersistente, recordarCarpeta,
@@ -44,6 +47,26 @@ export function App() {
   const [vista, setVista] = useState<"fila" | "cuadricula">("fila");
   const [soloCarpeta, setSoloCarpeta] = useState(true);
   const elegirArchivos = useRef<HTMLInputElement>(null);
+  const [duplicados, setDuplicados] = useState<Par[]>([]);
+  const cacheHuellas = useRef(new Map<string, { clave: string; huella: Set<string>; firma: Uint32Array }>());
+
+  /** Busca duplicados en toda la bóveda (sin los pares que el usuario dijo que no lo son). */
+  const revisarDuplicados = useCallback(() => {
+    const idx = indice.current;
+    if (!idx) return;
+    const ignorados = new Set<string>(JSON.parse(idx.ajuste("duplicados_ignorados") ?? "[]"));
+    const docsIdx = new Map(idx.listar().map((d) => [d.id, d]));
+    const clave = (a: string, b: string) => [docsIdx.get(a)?.codigo ?? a, docsIdx.get(b)?.codigo ?? b].sort().join("|");
+    const pares = duplicadosEnBoveda(idx.paraComparar(), UMBRALES_DUPLICADOS, cacheHuellas.current);
+    setDuplicados(pares.filter((p) => !ignorados.has(clave(p.a, p.b))));
+  }, []);
+
+  /** Avisos del navegador para lo vencido o por vencer (solo si el usuario los activó). */
+  const avisar = useCallback(() => {
+    const idx = indice.current;
+    if (!idx) return;
+    if (avisarVencimientos(idx, idx.listar(), (id) => setElegido(id)) > 0) void guardarIndice(idx.exportar());
+  }, []);
 
   const releerCarpetas = useCallback(async (h: FileSystemDirectoryHandle) => {
     try { setCarpetas(await leerCarpetas(h)); } catch { setCarpetas([]); }
@@ -69,10 +92,11 @@ export function App() {
     ).then((r) => {
       if (r.leidos + r.errores > 0) setResumenOcr(r);
       setDocs(idx.listar());
+      if (r.leidos > 0) { revisarDuplicados(); avisar(); }
     }).catch((e) => setError(`El OCR se detuvo: ${String(e)}`))
       .finally(() => { cola.current = null; setAvanceOcr(null); });
     cola.current = { cola: c, fin };
-  }, []);
+  }, [revisarDuplicados, avisar]);
 
   const actualizar = useCallback(async (h: FileSystemDirectoryHandle) => {
     if (!indice.current || ocupado.current) return;
@@ -81,9 +105,12 @@ export function App() {
     try {
       await pararOcr();
       const r = await actualizarIndice(h, indice.current, setAvance);
+      aplicarGuardados(indice.current, await leerVencimientosGuardados(h));
       await guardarIndice(indice.current.exportar());
       await guardarCodigosEnCarpeta(h, indice.current);
       setDocs(indice.current.listar());
+      revisarDuplicados();
+      avisar();
       setResumen(r);
       await releerCarpetas(h);
     } catch (e) {
@@ -93,7 +120,7 @@ export function App() {
       setAvance(null);
     }
     empezarOcr(h);
-  }, [pararOcr, empezarOcr, releerCarpetas]);
+  }, [pararOcr, empezarOcr, releerCarpetas, revisarDuplicados, avisar]);
 
   const abrir = useCallback(async (h: FileSystemDirectoryHandle, nueva: boolean) => {
     await pararOcr();
@@ -102,6 +129,8 @@ export function App() {
     setAbierta(null);
     setSubiendo(null);
     setAviso(null);
+    setDuplicados([]);
+    cacheHuellas.current.clear();
     if (nueva) {
       await borrarIndiceGuardado();
       await recordarCarpeta(h);
@@ -182,6 +211,32 @@ export function App() {
   };
   const cerrarFicha = useCallback(() => setElegido(null), []);
 
+  // Mientras la app está abierta, revisa los vencimientos cada hora (por si cambia el día).
+  useEffect(() => {
+    if (pantalla !== "lista") return;
+    const t = setInterval(() => { avisar(); setDocs((d) => [...d]); }, 60 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [pantalla, avisar]);
+
+  const cambiarVence = async (id: string, vence: string | null, estado: EstadoVence) => {
+    const idx = indice.current;
+    if (!idx || !carpeta) return;
+    const enCarpeta = await guardarDecision(carpeta, idx, id, vence, estado);
+    await guardarIndice(idx.exportar());
+    setDocs(idx.listar());
+    setAviso(enCarpeta ? null : "Guardé la fecha en la app. Sin permiso para escribir en la carpeta, se perdería si hubiera que reconstruir el índice.");
+  };
+
+  const ignorarDuplicado = async (p: Par) => {
+    const idx = indice.current;
+    if (!idx) return;
+    const ignorados = new Set<string>(JSON.parse(idx.ajuste("duplicados_ignorados") ?? "[]"));
+    ignorados.add([porId.get(p.a)?.codigo ?? p.a, porId.get(p.b)?.codigo ?? p.b].sort().join("|"));
+    idx.ponerAjuste("duplicados_ignorados", JSON.stringify([...ignorados]));
+    await guardarIndice(idx.exportar());
+    setDuplicados((d) => d.filter((x) => x !== p));
+  };
+
   /** Resultados: primero el documento cuyo código se escribió, luego los del texto. */
   const resultados: { elementos: Elemento[]; exacto: FichaDocumento | null } | null = useMemo(() => {
     const q = consulta.trim();
@@ -221,6 +276,7 @@ export function App() {
     for (const d of docs) {
       c[d.estadoTexto ?? "error"] = (c[d.estadoTexto ?? "error"] ?? 0) + 1;
       if (dudoso(d)) c.revisar = (c.revisar ?? 0) + 1;
+      if (d.venceEstado === "por confirmar") c.confirmar = (c.confirmar ?? 0) + 1;
     }
     return c;
   }, [docs]);
@@ -299,6 +355,7 @@ export function App() {
             <span className="cuenta">
               {" · "}{Object.entries(ESTADOS).filter(([k]) => cuenta[k]).map(([k, v]) => `${v}: ${cuenta[k]}`).join(" · ")}
               {cuenta.revisar ? ` · Para revisar: ${cuenta.revisar}` : ""}
+              {cuenta.confirmar ? ` · Fechas por confirmar: ${cuenta.confirmar}` : ""}
             </span>
           </p>
           <div className="acciones">
@@ -311,8 +368,9 @@ export function App() {
           <div className="avance" role="status">
             {avance.fase === "buscando" && `Buscando archivos… ${avance.hechos}`}
             {avance.fase === "leyendo" && `Leyendo ${avance.hechos + 1} de ${avance.total}: ${avance.actual}`}
+            {avance.fase === "completando" && `Buscando fechas de vencimiento y duplicados (${avance.hechos + 1} de ${avance.total})…`}
             {avance.fase === "guardando" && "Guardando el índice…"}
-            {avance.fase === "leyendo" && <progress max={avance.total} value={avance.hechos} />}
+            {(avance.fase === "leyendo" || avance.fase === "completando") && <progress max={avance.total} value={avance.hechos} />}
           </div>
         )}
         {!avance && resumen && (
@@ -348,11 +406,15 @@ export function App() {
               asignarFaltantes(idx, await leerCodigosGuardados(carpeta));
               await guardarIndice(idx.exportar());
               await guardarCodigosEnCarpeta(carpeta, idx);
+              await guardarVencimientosEnCarpeta(carpeta, idx);
               setDocs(idx.listar());
+              revisarDuplicados();
+              avisar();
               await releerCarpetas(carpeta);
               setAviso(`${rutas.length} ${rutas.length === 1 ? "archivo guardado" : "archivos guardados"} en tu carpeta.`);
             }}
             alCerrar={() => setSubiendo(null)}
+            alVer={setElegido}
           />
         )}
 
@@ -372,6 +434,9 @@ export function App() {
           </section>
         ) : carpeta && (
           <>
+            {docs.length > 0 && abierta === null && (
+              <Alertas docs={docs} porId={porId} duplicados={duplicados} alElegir={setElegido} alIgnorar={ignorarDuplicado} alActivarAvisos={avisar} />
+            )}
             <Carpetas raiz={carpeta} carpetas={resumenCarpetas} abierta={abierta} alAbrir={setAbierta} alCambiar={() => releerCarpetas(carpeta)} />
 
             {abierta !== null ? (
@@ -407,6 +472,7 @@ export function App() {
           texto={() => indice.current?.texto(ficha.id) ?? ""}
           alAbrir={() => onAbrirDocumento(ficha.id)}
           alCerrar={cerrarFicha}
+          alCambiarVence={(v, e) => cambiarVence(ficha.id, v, e)}
         />
       )}
     </div>

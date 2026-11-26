@@ -4,7 +4,7 @@
  */
 import type { DocIndice, EstadoTexto, Indice } from "@docvault/indice";
 import { configurarMotores, extraerTextoPdf } from "@docvault/core/navegador";
-import { detectarMovidos, extraerTextoDocx, extraerTextoXlsx } from "@docvault/core";
+import { analizarVencimiento, detectarMovidos, extraerTextoDocx, extraerTextoXlsx, sha256, type DatosVence } from "@docvault/core";
 import { asignarFaltantes, leerCodigosGuardados } from "./codigos";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { recorrer } from "./carpeta";
@@ -16,7 +16,7 @@ const TEXTO_PLANO = new Set(["txt", "md", "csv", "json", "xml", "html", "htm", "
 const IMAGENES = new Set(["jpg", "jpeg", "png", "tif", "tiff", "webp", "bmp", "gif"]);
 const MAX_TEXTO = 1_000_000;
 
-export interface Avance { fase: "buscando" | "leyendo" | "guardando"; hechos: number; total: number; actual?: string }
+export interface Avance { fase: "buscando" | "leyendo" | "completando" | "guardando"; hechos: number; total: number; actual?: string }
 export interface ResumenIndexado {
   nuevos: number; movidos: number; actualizados: number; quitados: number; sinCambios: number;
   errores: number; codigosNuevos: number; segundos: number;
@@ -53,15 +53,29 @@ export async function leerTexto(archivo: File): Promise<{ texto: string; estado:
   }
 }
 
+/** La fecha de vencimiento de un texto ya leído; null si el texto todavía no está (espera OCR). */
+export function venceDe(texto: string, estado: EstadoTexto): DatosVence | null {
+  if (estado === "pendiente de OCR") return null;
+  if (estado !== "listo") return { vence: null, venceEstado: "no detectada", venceTexto: null, venceOtra: null };
+  return analizarVencimiento(texto);
+}
+
+/** La huella exacta (SHA-256) de un archivo; null si no se pudo leer. */
+export async function hashDe(archivo: File): Promise<string | null> {
+  try { return await sha256(await archivo.arrayBuffer()); } catch { return null; }
+}
+
 /** La ficha del índice para un archivo de la carpeta. */
 export function fichaDe(
   ruta: string, archivo: File, texto: string, estado: EstadoTexto, confianza?: number | null, codigo?: string | null,
+  hash?: string | null, vence?: DatosVence | null,
 ): DocIndice {
   const sub = ruta.includes("/") ? ruta.slice(0, ruta.lastIndexOf("/")) : null;
   return {
     id: ruta, ruta, titulo: ruta, texto, carpeta: sub ?? undefined,
     tamano: archivo.size, modificado: archivo.lastModified, tipo: extension(archivo.name), estadoTexto: estado,
-    confianza: confianza ?? undefined, codigo: codigo ?? undefined,
+    confianza: confianza ?? undefined, codigo: codigo ?? undefined, hash: hash ?? undefined,
+    ...(vence ?? venceDe(texto, estado) ?? {}),
   };
 }
 
@@ -97,15 +111,36 @@ export async function actualizarIndice(
     const antes = movidos.get(a.ruta);
     const previo = antes ? previos.get(antes.ruta) : undefined;
     if (previo && previo.modificado === a.modificado && previo.estadoTexto) {
-      lote.push(fichaDe(a.ruta, archivo, textoMovido.get(previo.id) ?? "", previo.estadoTexto, previo.confianza, previo.codigo));
+      // Movido sin cambios: se conserva todo, también la fecha que decidió el usuario.
+      const t = textoMovido.get(previo.id) ?? "";
+      const vence = previo.venceEstado
+        ? { vence: previo.vence, venceEstado: previo.venceEstado, venceTexto: previo.venceTexto, venceOtra: previo.venceOtra }
+        : null;
+      lote.push(fichaDe(a.ruta, archivo, t, previo.estadoTexto, previo.confianza, previo.codigo, previo.hash ?? (await hashDe(archivo)), vence));
     } else {
       const { texto, estado } = await leerTexto(archivo);
       if (estado === "error") errores++;
-      lote.push(fichaDe(a.ruta, archivo, texto, estado, null, antes?.codigo));
+      lote.push(fichaDe(a.ruta, archivo, texto, estado, null, antes?.codigo, await hashDe(archivo)));
     }
     if (lote.length >= 25) indice.agregar(lote.splice(0));
   }
   if (lote.length) indice.agregar(lote);
+
+  // Índices de la entrega 3 o anteriores: completar huella y vencimiento sin releer el texto.
+  const leidos = new Set(porLeer.map((a) => a.ruta));
+  const incompletos = indice.listar().filter((d) => !leidos.has(d.id) && (!d.hash || (!d.venceEstado && d.estadoTexto !== "pendiente de OCR")));
+  const porRuta = new Map(archivos.map((a) => [a.ruta, a]));
+  for (const [i, d] of incompletos.entries()) {
+    alAvanzar({ fase: "completando", hechos: i, total: incompletos.length, actual: d.id });
+    if (!d.venceEstado && d.estadoTexto) {
+      const v = venceDe(indice.texto(d.id) ?? "", d.estadoTexto);
+      if (v) indice.ponerVencimiento(d.id, v);
+    }
+    const a = porRuta.get(d.id);
+    if (!d.hash && a) {
+      try { const h = await hashDe(await a.handle.getFile()); if (h) indice.ponerHash(d.id, h); } catch { /* se intenta la próxima vez */ }
+    }
+  }
   alAvanzar({ fase: "guardando", hechos: porLeer.length, total: porLeer.length });
   const codigosNuevos = asignarFaltantes(indice, await leerCodigosGuardados(raiz));
 
