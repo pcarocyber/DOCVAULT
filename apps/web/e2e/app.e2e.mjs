@@ -589,6 +589,75 @@ try {
   assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), "DV-000002");
   await pagina.keyboard.press("Escape");
 
+  // Contraseña de la bóveda: se crea en «Contraseña» y se pide al abrir un documento por su código.
+  await pagina.getByRole("button", { name: /^Contraseña/ }).click();
+  const dlgClave = pagina.getByRole("dialog", { name: "Contraseña de la bóveda" });
+  await dlgClave.getByLabel("Contraseña nueva").fill("corta");
+  await dlgClave.getByLabel("Repítela").fill("corta");
+  await dlgClave.getByRole("button", { name: "Crear contraseña" }).click();
+  await dlgClave.getByText("Usa al menos 6 caracteres.").waitFor();
+  await dlgClave.getByLabel("Contraseña nueva").fill("secreta1");
+  await dlgClave.getByLabel("Repítela").fill("secreta1");
+  await dlgClave.getByRole("button", { name: "Crear contraseña" }).click();
+  const codigoRec = (await dlgClave.getByLabel("Código de recuperación").textContent()).trim();
+  assert.match(codigoRec, /^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/);
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-clave.png") });
+  await dlgClave.getByRole("button", { name: "Ya lo anoté" }).click();
+  await pagina.getByRole("button", { name: "Contraseña ✓" }).waitFor();
+  const claveEnCarpeta = await pagina.evaluate(async () => {
+    const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
+    return (await (await (await raiz.getDirectoryHandle(".docvault")).getFileHandle("clave.json")).getFile()).text();
+  });
+  assert.ok(!claveEnCarpeta.includes("secreta1") && claveEnCarpeta.includes("huella"), "solo se guarda la huella");
+  // Abrir por código pide la contraseña; una equivocada no abre nada.
+  await pagina.getByLabel("Buscar").fill(codigoArr);
+  await pagina.getByLabel("Buscar").press("Enter");
+  await dlgClave.getByText(`Para ver ${codigoArr}`).waitFor();
+  assert.equal(await ficha.count(), 0, "sin contraseña no se ve la ficha");
+  await dlgClave.getByLabel("Contraseña", { exact: true }).fill("otra cosa");
+  await dlgClave.getByRole("button", { name: "Ver documento" }).click();
+  await dlgClave.getByText("Contraseña incorrecta.").waitFor();
+  await dlgClave.getByLabel("Contraseña", { exact: true }).fill("secreta1");
+  await dlgClave.getByRole("button", { name: "Ver documento" }).click();
+  await ficha.waitFor();
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoArr, "con la contraseña se abre");
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+  // Durante 5 minutos no se vuelve a pedir (lector USB).
+  await pagina.getByLabel("Buscar").fill("");
+  await pagina.evaluate(() => document.activeElement?.blur());
+  await pagina.keyboard.type(`${codigoRecibo}\n`);
+  await ficha.waitFor();
+  assert.equal(await dlgClave.count(), 0, "dentro de los 5 minutos no la pide");
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+  // Pasados 5 minutos la pide otra vez. La olvidó: usa el código de recuperación y crea otra.
+  await pagina.clock.setFixedTime(new Date("2026-11-26T10:06:00"));
+  await pagina.evaluate(() => document.activeElement?.blur());
+  await pagina.keyboard.type(`${codigoRecibo}\n`);
+  await dlgClave.getByRole("button", { name: "Olvidé la contraseña" }).click();
+  await dlgClave.getByLabel("Código de recuperación").fill(codigoRec.toLowerCase().replace(/-/g, " "));
+  await dlgClave.getByRole("button", { name: "Seguir" }).click();
+  await dlgClave.getByLabel("Contraseña nueva").fill("nueva123");
+  await dlgClave.getByLabel("Repítela").fill("nueva123");
+  await dlgClave.getByRole("button", { name: "Guardar contraseña nueva" }).click();
+  const codigoRec2 = (await dlgClave.getByLabel("Código de recuperación").textContent()).trim();
+  assert.notEqual(codigoRec2, codigoRec, "código de recuperación nuevo");
+  await dlgClave.getByRole("button", { name: "Ya lo anoté, abrir el documento" }).click();
+  await ficha.waitFor();
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoRecibo);
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+  // Quitar la contraseña pide la actual.
+  await pagina.getByRole("button", { name: "Contraseña ✓" }).click();
+  await dlgClave.getByLabel("Contraseña actual o código de recuperación").fill("secreta1");
+  await dlgClave.getByRole("button", { name: "Seguir" }).click();
+  await dlgClave.getByText("No es la contraseña actual").waitFor();
+  await dlgClave.getByLabel("Contraseña actual o código de recuperación").fill("nueva123");
+  await dlgClave.getByRole("button", { name: "Seguir" }).click();
+  await dlgClave.getByRole("button", { name: "Quitar la contraseña" }).click();
+  await dlgClave.getByText("la bóveda ya no tiene contraseña").waitFor();
+  await dlgClave.getByRole("button", { name: "Cerrar", exact: true }).first().click();
+  await pagina.getByRole("button", { name: "Contraseña", exact: true }).waitFor();
+  console.log("  Contraseña de la bóveda: crear, pedir, recuperar y quitar: bien.");
+
   await pagina.getByLabel("Buscar").fill("");
   await pagina.screenshot({ path: resolve(raiz, "e2e/captura.png") });
   assert.deepEqual(errores, [], "sin errores en la página");
