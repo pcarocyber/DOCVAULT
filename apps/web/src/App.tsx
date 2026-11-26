@@ -3,7 +3,7 @@ import { Indice, type EstadoVence, type FichaDocumento } from "@docvault/indice"
 import { duplicadosEnBoveda, leerCodigo, UMBRALES_DUPLICADOS, type Par } from "@docvault/core";
 import { Alertas } from "./Alertas";
 import { Comparar } from "./Comparar";
-import { Papelera } from "./Papelera";
+import { Papelera } from "./PanelPapelera";
 import { borrarParaSiempre, leerPapelera, moverAPapelera, recuperar, type EnPapelera } from "./papelera";
 import { avisarVencimientos } from "./avisos";
 import { aplicarGuardados, guardarDecision, guardarVencimientosEnCarpeta, leerVencimientosGuardados } from "./vencimientos";
