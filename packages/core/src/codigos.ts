@@ -15,7 +15,9 @@ export function formatearCodigo(n: number): string {
  */
 export function leerCodigo(texto: string): string | null {
   const t = texto.trim();
-  const conPrefijo = t.match(/^dv[-\s]?0*(\d{1,9})$/i);
+  // Acepta cualquier signo entre "DV" y el número: un lector USB con el teclado en español
+  // escribe "DV'000123" en vez de "DV-000123". También un enlace que termine en el código.
+  const conPrefijo = t.match(/^(?:.*[/#=])?dv[^a-z0-9]?0*(\d{1,9})$/i);
   if (conPrefijo) return formatearCodigo(Number(conPrefijo[1]));
   if (/^\d{6}$/.test(t)) return formatearCodigo(Number(t));
   return null;
@@ -67,20 +69,48 @@ const PATRONES = [
 export interface Barra { x: number; ancho: number }
 
 /**
- * Barras de Code 128-B para `texto` (caracteres ASCII 32 a 126), en módulos.
- * Incluye 10 módulos de margen a cada lado, que los lectores necesitan.
+ * Valores de Code 128 para `texto` (caracteres ASCII 32 a 126). Usa el juego B para
+ * letras y signos, y el juego C (dos cifras por símbolo) para tramos de 4 cifras o más:
+ * así "DV-000123" ocupa menos y cada barra puede ser más gruesa (se lee mejor con cámara).
  */
-export function code128(texto: string): { barras: Barra[]; ancho: number } {
-  const valores = [...texto].map((c) => {
+export function valoresCode128(texto: string): number[] {
+  const t = [...texto];
+  for (const c of t) {
     const v = c.charCodeAt(0) - 32;
-    if (v < 0 || v > 94) throw new Error(`Code 128-B no admite el carácter "${c}"`);
-    return v;
-  });
-  const control = (104 + valores.reduce((s, v, i) => s + v * (i + 1), 0)) % 103;
-  const secuencia = [104, ...valores, control, 106];
+    if (v < 0 || v > 94) throw new Error(`Code 128 no admite el carácter "${c}"`);
+  }
+  const valores: number[] = [];
+  let juego: "B" | "C" | null = null;
+  const usar = (j: "B" | "C") => {
+    if (juego === j) return;
+    valores.push(juego === null ? (j === "B" ? 104 : 105) : (j === "C" ? 99 : 100));
+    juego = j;
+  };
+  const esCifra = (c: string | undefined) => c !== undefined && c >= "0" && c <= "9";
+  let i = 0;
+  while (i < t.length) {
+    let tramo = 0;
+    while (esCifra(t[i + tramo])) tramo++;
+    if (tramo >= 4) {
+      if (tramo % 2 === 1) { usar("B"); valores.push(t[i]!.charCodeAt(0) - 32); i++; tramo--; }
+      usar("C");
+      for (; tramo >= 2; tramo -= 2, i += 2) valores.push(Number(t[i]! + t[i + 1]!));
+    } else {
+      usar("B");
+      valores.push(t[i]!.charCodeAt(0) - 32);
+      i++;
+    }
+  }
+  if (juego === null) usar("B");
+  const control = valores.reduce((s, v, k) => s + v * Math.max(k, 1), 0) % 103;
+  return [...valores, control, 106];
+}
+
+/** Barras de Code 128 para `texto`, en módulos. Incluye 10 módulos de margen a cada lado, que los lectores necesitan. */
+export function code128(texto: string): { barras: Barra[]; ancho: number } {
   const barras: Barra[] = [];
   let x = 10;
-  for (const v of secuencia) {
+  for (const v of valoresCode128(texto)) {
     [...PATRONES[v]!].forEach((w, i) => {
       const ancho = Number(w);
       if (i % 2 === 0) barras.push({ x, ancho });

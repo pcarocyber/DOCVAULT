@@ -8,3 +8,4 @@ export * from "./resumen";
 export * from "./oficina";
 export * from "./codigos";
 export * from "./vencimientos";
+export * from "./clave";

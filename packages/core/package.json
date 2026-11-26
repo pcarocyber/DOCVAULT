@@ -8,5 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./navegador": "./src/navegador.ts"
+  },
+  "devDependencies": {
+    "@zxing/library": "0.21.3"
   }
 }
