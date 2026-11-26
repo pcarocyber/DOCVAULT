@@ -20,7 +20,20 @@ export interface DocIndice {
   confianza?: number;
   /** Código único del documento (DV-000123). */
   codigo?: string;
+  /** SHA-256 de los bytes del archivo, para encontrar copias exactas. */
+  hash?: string;
+  /** Fecha de vencimiento (AAAA-MM-DD) y cómo se obtuvo. */
+  vence?: string | null;
+  venceEstado?: EstadoVence | null;
+  /** La fecha tal como aparece en el documento. */
+  venceTexto?: string | null;
+  /** La otra forma de leer una fecha ambigua (03/04 puede ser 3 de abril o 4 de marzo). */
+  venceOtra?: string | null;
 }
+
+/** Ver packages/core/src/vencimientos.ts. */
+export type EstadoVence = "detectada" | "por confirmar" | "no detectada" | "confirmada" | "manual" | "sin vencimiento";
+const DECIDIDO = "('confirmada', 'manual', 'sin vencimiento')";
 
 /** Cómo se obtuvo el texto del documento. */
 export type EstadoTexto = "listo" | "sin texto" | "pendiente de OCR" | "formato no soportado" | "error";
@@ -28,12 +41,16 @@ export type EstadoTexto = "listo" | "sin texto" | "pendiente de OCR" | "formato 
 export interface FichaDocumento {
   id: string; titulo: string; carpeta: string | null; ruta: string | null; tamano: number | null;
   modificado: number | null; tipo: string | null; estadoTexto: EstadoTexto | null; confianza: number | null; codigo: string | null;
+  hash: string | null; vence: string | null; venceEstado: EstadoVence | null; venceTexto: string | null; venceOtra: string | null;
 }
+
+const COLUMNAS = `id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto, confianza, codigo,
+  hash, vence, vence_estado AS venceEstado, vence_texto AS venceTexto, vence_otra AS venceOtra`;
 
 /** `fragmento` marca las palabras halladas entre los caracteres \u0002 y \u0003. */
 export interface Hallazgo { id: string; titulo: string; fragmento: string; puntaje: number }
 
-const VERSION_ESQUEMA = 4;
+const VERSION_ESQUEMA = 5;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Sqlite = any;
@@ -53,7 +70,8 @@ function crearEsquema(db: Db) {
     DROP TABLE IF EXISTS ajustes;
     CREATE TABLE documentos (
       id TEXT PRIMARY KEY, titulo TEXT, carpeta TEXT, ruta TEXT,
-      tamano INTEGER, modificado INTEGER, tipo TEXT, estado_texto TEXT, confianza REAL, codigo TEXT
+      tamano INTEGER, modificado INTEGER, tipo TEXT, estado_texto TEXT, confianza REAL, codigo TEXT,
+      hash TEXT, vence TEXT, vence_estado TEXT, vence_texto TEXT, vence_otra TEXT
     );
     CREATE UNIQUE INDEX documentos_codigo ON documentos(codigo);
     CREATE TABLE ajustes (clave TEXT PRIMARY KEY, valor TEXT);
@@ -91,6 +109,14 @@ export class Indice {
                    CREATE TABLE ajustes (clave TEXT PRIMARY KEY, valor TEXT);`);
           version = 4;
         }
+        if (version === 4) {
+          db.exec(`ALTER TABLE documentos ADD COLUMN hash TEXT;
+                   ALTER TABLE documentos ADD COLUMN vence TEXT;
+                   ALTER TABLE documentos ADD COLUMN vence_estado TEXT;
+                   ALTER TABLE documentos ADD COLUMN vence_texto TEXT;
+                   ALTER TABLE documentos ADD COLUMN vence_otra TEXT;`);
+          version = 5;
+        }
         if (version === VERSION_ESQUEMA) {
           db.exec(`PRAGMA user_version = ${VERSION_ESQUEMA}`);
           return new Indice(sqlite3, db);
@@ -110,16 +136,25 @@ export class Indice {
     return this.sqlite.capi.sqlite3_js_db_export(this.db.pointer) as Uint8Array;
   }
 
-  /** Agrega o reemplaza documentos (por id). */
+  /**
+   * Agrega o reemplaza documentos (por id). Conserva el código que ya tenía y,
+   * si el usuario ya decidió la fecha de vencimiento, también esa decisión.
+   */
   agregar(docs: DocIndice[]): void {
     this.db.exec("BEGIN");
     try {
       for (const d of docs) {
+        const previo = this.porId(d.id);
+        const decidido = previo?.venceEstado && ["confirmada", "manual", "sin vencimiento"].includes(previo.venceEstado);
+        const v = decidido
+          ? { vence: previo.vence, venceEstado: previo.venceEstado, venceTexto: previo.venceTexto, venceOtra: previo.venceOtra }
+          : { vence: d.vence ?? null, venceEstado: d.venceEstado ?? null, venceTexto: d.venceTexto ?? null, venceOtra: d.venceOtra ?? null };
         this.db.exec({
-          sql: `INSERT OR REPLACE INTO documentos (id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto, confianza, codigo)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        coalesce(?, (SELECT codigo FROM documentos WHERE id = ?)))`,
-          bind: [d.id, d.titulo, d.carpeta ?? null, d.ruta ?? null, d.tamano ?? null, d.modificado ?? null, d.tipo ?? null, d.estadoTexto ?? null, d.confianza ?? null, d.codigo ?? null, d.id],
+          sql: `INSERT OR REPLACE INTO documentos (id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto, confianza, codigo,
+                  hash, vence, vence_estado, vence_texto, vence_otra)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          bind: [d.id, d.titulo, d.carpeta ?? null, d.ruta ?? null, d.tamano ?? null, d.modificado ?? null, d.tipo ?? null, d.estadoTexto ?? null,
+            d.confianza ?? null, d.codigo ?? previo?.codigo ?? null, d.hash ?? null, v.vence, v.venceEstado, v.venceTexto, v.venceOtra],
         });
         this.db.exec({ sql: "DELETE FROM busqueda WHERE id = ?", bind: [d.id] });
         this.db.exec({ sql: "INSERT INTO busqueda (id, titulo, texto) VALUES (?, ?, ?)", bind: [d.id, d.titulo, d.texto] });
@@ -144,8 +179,7 @@ export class Indice {
   listar(): FichaDocumento[] {
     const filas: FichaDocumento[] = [];
     this.db.exec({
-      sql: `SELECT id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto, confianza, codigo
-            FROM documentos ORDER BY coalesce(ruta, id)`,
+      sql: `SELECT ${COLUMNAS} FROM documentos ORDER BY coalesce(ruta, id)`,
       rowMode: "object",
       callback: (f: FichaDocumento) => { filas.push({ ...f }); },
     });
@@ -195,11 +229,50 @@ export class Indice {
   porCodigo(codigo: string): FichaDocumento | null {
     let f: FichaDocumento | null = null;
     this.db.exec({
-      sql: `SELECT id, titulo, carpeta, ruta, tamano, modificado, tipo, estado_texto AS estadoTexto, confianza, codigo
-            FROM documentos WHERE codigo = ?`,
+      sql: `SELECT ${COLUMNAS} FROM documentos WHERE codigo = ?`,
       bind: [codigo], rowMode: "object", callback: (x: FichaDocumento) => { f = { ...x }; },
     });
     return f;
+  }
+
+  /** El documento con ese id, o null. */
+  porId(id: string): FichaDocumento | null {
+    let f: FichaDocumento | null = null;
+    this.db.exec({
+      sql: `SELECT ${COLUMNAS} FROM documentos WHERE id = ?`,
+      bind: [id], rowMode: "object", callback: (x: FichaDocumento) => { f = { ...x }; },
+    });
+    return f;
+  }
+
+  /**
+   * Pone la fecha de vencimiento de un documento. Si `delUsuario` es falso (la app la
+   * detectó), no reemplaza una fecha que el usuario ya confirmó o corrigió.
+   */
+  ponerVencimiento(
+    id: string,
+    v: { vence: string | null; venceEstado: EstadoVence; venceTexto?: string | null; venceOtra?: string | null },
+    delUsuario = false,
+  ): void {
+    this.db.exec({
+      sql: `UPDATE documentos SET vence = ?, vence_estado = ?, vence_texto = ?, vence_otra = ?
+            WHERE id = ? ${delUsuario ? "" : `AND coalesce(vence_estado, '') NOT IN ${DECIDIDO}`}`,
+      bind: [v.vence, v.venceEstado, v.venceTexto ?? null, v.venceOtra ?? null, id],
+    });
+  }
+
+  ponerHash(id: string, hash: string): void {
+    this.db.exec({ sql: "UPDATE documentos SET hash = ? WHERE id = ?", bind: [hash, id] });
+  }
+
+  /** Id, hash y texto de todos los documentos, para buscar duplicados. */
+  paraComparar(): { id: string; hash: string | null; texto: string }[] {
+    const filas: { id: string; hash: string | null; texto: string }[] = [];
+    this.db.exec({
+      sql: "SELECT d.id AS id, d.hash AS hash, coalesce(b.texto, '') AS texto FROM documentos d LEFT JOIN busqueda b ON b.id = d.id",
+      rowMode: "object", callback: (f: { id: string; hash: string | null; texto: string }) => { filas.push({ ...f }); },
+    });
+    return filas;
   }
 
   /** Pone o cambia el código de documentos ya indexados. */

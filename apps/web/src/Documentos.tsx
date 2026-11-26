@@ -7,6 +7,7 @@ import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import type { FichaDocumento } from "@docvault/indice";
 import { CONFIANZA_MINIMA } from "./ocr";
 import { Miniatura } from "./Miniatura";
+import { cuandoVence, etapa, hoyIso } from "@docvault/core";
 
 export const ESTADOS: Record<string, string> = {
   "listo": "Con texto",
@@ -67,6 +68,7 @@ export function Documentos({ raiz, elementos, vista, elegido, alElegir, etiqueta
               </span>
               <span className="pie">
                 {doc.codigo && <span className="codigo">{doc.codigo}</span>}
+                <ChipVence doc={doc} />
                 {dudoso(doc) && <span className="revisar" title="El OCR no está seguro de esta lectura">Revisar lectura</span>}
                 {doc.estadoTexto && doc.estadoTexto !== "listo" && <span className="estado-doc">{ESTADOS[doc.estadoTexto]}</span>}
               </span>
@@ -77,6 +79,21 @@ export function Documentos({ raiz, elementos, vista, elegido, alElegir, etiqueta
       ))}
     </ul>
   );
+}
+
+/** La clase de color según qué tan cerca está el vencimiento. */
+export function claseEtapa(fecha: string, hoy: string): string {
+  const e = etapa(fecha, hoy);
+  return e === "vencido" ? "vencido" : e === "esta semana" ? "semana" : e === "este mes" ? "mes" : "lejos";
+}
+
+/** En la tarjeta: solo si venció, vence en 30 días o falta confirmar la fecha. */
+function ChipVence({ doc }: { doc: FichaDocumento }) {
+  if (doc.venceEstado === "por confirmar") return <span className="chip-vence confirmar">Confirmar fecha</span>;
+  if (!doc.vence || doc.venceEstado === "sin vencimiento") return null;
+  const hoy = hoyIso();
+  if (etapa(doc.vence, hoy) === "más adelante") return null;
+  return <span className={`chip-vence ${claseEtapa(doc.vence, hoy)}`}>{cuandoVence(doc.vence, hoy)}</span>;
 }
 
 /** La fila se desliza hacia el lado donde está el cursor, con un movimiento suave. */

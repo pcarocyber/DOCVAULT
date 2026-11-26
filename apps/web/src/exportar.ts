@@ -1,6 +1,15 @@
 /** Exporta el índice a un Excel (.xlsx) con el código de cada documento. Se crea en el navegador. */
 import type { FichaDocumento } from "@docvault/indice";
-import { crearXlsx, type Celda } from "@docvault/core";
+import { crearXlsx, fechaCorta, type Celda } from "@docvault/core";
+
+const VENCE: Record<string, string> = {
+  "detectada": "Leída en el documento",
+  "por confirmar": "Por confirmar",
+  "no detectada": "",
+  "confirmada": "Confirmada",
+  "manual": "Escrita a mano",
+  "sin vencimiento": "No vence",
+};
 
 const ESTADO: Record<string, string> = {
   "listo": "Con texto",
@@ -13,7 +22,7 @@ const ESTADO: Record<string, string> = {
 export function filasIndice(docs: FichaDocumento[]): Celda[][] {
   const orden = [...docs].sort((a, b) => (a.codigo ?? "~").localeCompare(b.codigo ?? "~") || a.id.localeCompare(b.id));
   return [
-    ["Código", "Nombre", "Carpeta", "Ruta", "Tipo", "Tamaño (KB)", "Modificado", "Texto", "Confianza OCR (%)"],
+    ["Código", "Nombre", "Carpeta", "Ruta", "Tipo", "Tamaño (KB)", "Modificado", "Texto", "Confianza OCR (%)", "Vence", "Origen de la fecha"],
     ...orden.map((d): Celda[] => [
       d.codigo,
       d.id.split("/").at(-1) ?? d.id,
@@ -24,6 +33,8 @@ export function filasIndice(docs: FichaDocumento[]): Celda[][] {
       d.modificado ? new Date(d.modificado).toLocaleDateString("es-DO") : "",
       ESTADO[d.estadoTexto ?? ""] ?? "",
       d.confianza != null ? Math.round(d.confianza * 100) : null,
+      d.vence && d.venceEstado !== "sin vencimiento" ? fechaCorta(d.vence) : d.venceEstado === "sin vencimiento" ? "No vence" : "",
+      d.vence && d.venceEstado !== "sin vencimiento" ? VENCE[d.venceEstado ?? ""] ?? "" : "",
     ]),
   ];
 }
@@ -35,7 +46,7 @@ export function nombreExcel(fecha = new Date()): string {
 }
 
 export function descargarExcel(docs: FichaDocumento[]): void {
-  const bytes = crearXlsx([{ nombre: "Documentos", filas: filasIndice(docs), anchos: [12, 40, 20, 50, 8, 12, 12, 14, 18] }]);
+  const bytes = crearXlsx([{ nombre: "Documentos", filas: filasIndice(docs), anchos: [12, 40, 20, 50, 8, 12, 12, 14, 18, 14, 22] }]);
   const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
   const a = document.createElement("a");
   a.href = url;

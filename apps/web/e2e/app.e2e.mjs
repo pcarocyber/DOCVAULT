@@ -5,7 +5,8 @@
  * con OCR, busca, muestra el texto, recuerda el índice al recargar, y se pone
  * al día cuando se agrega, se borra o se mueve un archivo. También el diseño
  * (carpetas, fila de documentos, ficha con QR y código de barras), el código único
- * de cada documento, la búsqueda por código y la exportación a Excel.
+ * de cada documento, la búsqueda por código y la exportación a Excel. Y desde la
+ * entrega 4: fechas de vencimiento (detectar, confirmar, avisar) y duplicados.
  * Uso: npm run e2e  (desde la raíz del repositorio)
  */
 import assert from "node:assert/strict";
@@ -43,7 +44,7 @@ const datos = (n) => ({ base64: readFileSync(resolve(raiz, "e2e/datos", n)).toSt
 const archivos = {
   "Contratos/arrendamiento local.pdf": pdfConTexto("Contrato de arrendamiento del local comercial, vence el 30 de junio de 2027. Arrendatario: Farmacia Nueva Aurora."),
   "Facturas/factura B0100004521.pdf": pdfConTexto("Factura de credito fiscal. Fecha limite de pago: 15 de diciembre de 2026. Total RD$ 30,208.00 por resmas de papel."),
-  "notas.txt": "Póliza de seguro del vehículo: renovar en mayo.",
+  "notas.txt": "Póliza de seguro del vehículo: vigente hasta 03/04/2027. Renovar en mayo.",
   "fotos/cedula.jpg": "no es una imagen real",
   "otros/planilla.xls": "formato viejo de Excel",
   "fotos/recibo.jpg": datos("recibo.jpg"),
@@ -57,6 +58,18 @@ const servidor = await preview({ root: raiz, preview: { port: 5199, strictPort: 
 const url = servidor.resolvedUrls.local[0];
 const navegador = await chromium.launch();
 const pagina = await navegador.newPage();
+// Un día fijo, para que "vence en 19 días" no cambie con la fecha real.
+await pagina.clock.setFixedTime(new Date("2026-11-26T10:00:00"));
+// Notificaciones de mentira: se anotan en vez de mostrarse.
+await pagina.addInitScript(() => {
+  window.__avisos = [];
+  window.Notification = class {
+    static permission = "default";
+    static async requestPermission() { this.permission = "granted"; return "granted"; }
+    constructor(titulo, op) { window.__avisos.push({ titulo, cuerpo: op?.body ?? "" }); }
+    close() {}
+  };
+});
 // El modelo de IA básica se sirve desde bench/modelos (ver motores.ts); sin esa copia,
 // la prueba lo bajaría de Hugging Face.
 const errores = [];
@@ -94,6 +107,45 @@ try {
   await estadoOcr.waitFor({ timeout: 180_000 });
   assert.match(await estadoOcr.textContent(), /2 leídos.*1 no se pudieron leer/);
   console.log(`  OCR: ${(await estadoOcr.textContent()).trim()}`);
+
+  // Vencimientos: la app lee la fecha de cada documento y avisa lo que vence pronto.
+  const vencimientos = pagina.getByLabel("Vencimientos");
+  await vencimientos.getByText("factura B0100004521.pdf").waitFor();
+  assert.match(await vencimientos.textContent(), /vence en 19 días.*factura B0100004521\.pdf.*15 dic 2026/s, "la factura vence en 19 días");
+  assert.doesNotMatch(await vencimientos.textContent(), /arrendamiento/, "lo que vence en más de 30 días no sale en la lista");
+  assert.match(await vencimientos.textContent(), /1 fecha por confirmar/, "03/04/2027 se puede leer de dos formas");
+  await vencimientos.getByRole("button", { name: "Ver todas las fechas (2 más adelante)" }).click();
+  assert.match(await vencimientos.textContent(), /arrendamiento local\.pdf.*30 jun 2027/s);
+  await vencimientos.getByRole("button", { name: "Activar avisos" }).click();
+  await vencimientos.getByText("Avisos activos").waitFor();
+  const avisos = await pagina.evaluate(() => window.__avisos);
+  assert.equal(avisos.length, 1, "un solo aviso del navegador");
+  assert.equal(avisos[0].titulo, "factura B0100004521.pdf vence en 19 días");
+  assert.match(avisos[0].cuerpo, /^DV-\d{6} · 15 dic 2026$/);
+  // Confirmar la fecha ambigua: el usuario elige cuál de las dos lecturas es.
+  await vencimientos.getByRole("button", { name: "Confirmar la fecha de notas.txt" }).click();
+  const fichaV = pagina.getByRole("dialog", { name: "Ficha del documento" });
+  await fichaV.getByText("El documento dice «03/04/2027». ¿Qué fecha es?").waitFor();
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-vencimiento.png") });
+  await fichaV.getByRole("button", { name: "4 de marzo de 2027" }).click();
+  await fichaV.getByText("Confirmada por ti").waitFor();
+  const codigoNotas = (await fichaV.locator(".codigo-grande").textContent()).trim();
+  const decisiones = await pagina.evaluate(async () => {
+    const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
+    const f = await (await (await raiz.getDirectoryHandle(".docvault")).getFileHandle("vencimientos.json")).getFile();
+    return JSON.parse(await f.text());
+  });
+  assert.deepEqual(decisiones.codigos[codigoNotas], { vence: "2027-03-04", estado: "confirmada" }, "la decisión se guarda en la carpeta del usuario");
+  // Corregir a mano la fecha de la factura.
+  await pagina.keyboard.press("Escape");
+  await vencimientos.getByRole("button", { name: "Ver ficha de factura B0100004521.pdf" }).click();
+  await fichaV.getByRole("button", { name: "Cambiar" }).click();
+  await fichaV.getByLabel("Fecha de vencimiento").fill("2026-12-01");
+  await fichaV.getByRole("button", { name: "Guardar fecha" }).click();
+  await fichaV.getByText("Escrita por ti").waitFor();
+  assert.match(await fichaV.locator(".vence").textContent(), /vence en 5 días/);
+  await pagina.keyboard.press("Escape");
+  assert.doesNotMatch(await vencimientos.textContent(), /por confirmar/);
 
   const codigoDe = async (q) => {
     await buscar(q);
@@ -214,22 +266,38 @@ try {
 
   // Subir tres archivos: la app los lee (uno con OCR), sugiere carpeta y guarda al confirmar.
   await pagina.getByLabel("Elegir archivos para subir").setInputFiles([
-    { name: "factura luz.pdf", mimeType: "application/pdf", buffer: Buffer.from(pdfConTexto("Factura de servicio electrico. Total a pagar RD$ 3,450.00. Fecha de vencimiento del pago: 20 de diciembre de 2026.")) },
+    { name: "factura luz.pdf", mimeType: "application/pdf", buffer: Buffer.from(pdfConTexto("Factura de luz. Total RD$ 3,450.00. Fecha de vencimiento: 20 de diciembre de 2026.")) },
     { name: "IMG_2031.jpg", mimeType: "image/jpeg", buffer: readFileSync(resolve(raiz, "e2e/datos/recibo.jpg")) },
     { name: "poliza auto.txt", mimeType: "text/plain", buffer: Buffer.from("Poliza de seguro de vehiculo. Cobertura contra todo riesgo. Aseguradora: Seguros Ejemplo. Vigencia hasta marzo 2027.") },
   ]);
   const guardar = pagina.locator(".subir").getByRole("button", { name: "Guardar" });
   await guardar.waitFor({ timeout: 120_000 });
   await pagina.waitForFunction(() => !document.querySelector(".subir .primario")?.hasAttribute("disabled"), null, { timeout: 120_000 });
+  // La foto es el mismo archivo que fotos/recibo.jpg: la app avisa y no la guarda, salvo que se pida.
+  const avisoDup = pagina.locator(".subir .aviso-dup");
+  assert.equal(await avisoDup.count(), 1, "solo la foto repetida tiene aviso");
+  assert.match(await avisoDup.textContent(), /Copia exacta de recibo\.jpg \(DV-\d{6}\), que ya está en tu bóveda/);
+  assert.match(await pagina.locator(".subir").textContent(), /factura luz\.pdf.*Vence: 20 dic 2026 \(vence en 24 días\)/s, "al subir se ve la fecha de vencimiento");
+  await pagina.getByLabel("Guardar otra copia de todos modos").check();
   const elegida = (n) => pagina.getByLabel(`Carpeta para ${n}`).inputValue();
-  const sugerencias = { factura: await elegida("factura luz.pdf"), foto: await elegida("IMG_2031.jpg"), poliza: await elegida("poliza auto.txt") };
-  console.log(`  Sugerencias: ${JSON.stringify(sugerencias)}`);
-  assert.equal(sugerencias.factura, "Facturas");
-  // Un recibo de alquiler es ambiguo (Facturas o Contratos): aquí el usuario corrige la sugerencia.
-  assert.ok(["Facturas", "Contratos"].includes(sugerencias.foto), "el recibo leído con OCR va a una carpeta descrita");
-  await pagina.getByLabel("Carpeta para IMG_2031.jpg").selectOption("Facturas");
-  assert.equal(sugerencias.poliza, "Seguros");
-  assert.match(await pagina.locator(".subir").textContent(), /\(sugerida\)/);
+  // Sin el modelo en bench/modelos y sin acceso a Hugging Face, la IA básica no carga:
+  // la app lo dice y el usuario elige a mano. Así la prueba sigue con lo demás.
+  const sinIa = (await pagina.locator(".subir .error").allTextContents()).some((t) => /IA básica/.test(t));
+  if (sinIa) {
+    console.log("  Aviso: la IA básica no cargó (sin modelo local ni internet); las carpetas se eligen a mano.");
+    await pagina.getByLabel("Carpeta para factura luz.pdf").selectOption("Facturas");
+    await pagina.getByLabel("Carpeta para IMG_2031.jpg").selectOption("Facturas");
+    await pagina.getByLabel("Carpeta para poliza auto.txt").selectOption("Seguros");
+  } else {
+    const sugerencias = { factura: await elegida("factura luz.pdf"), foto: await elegida("IMG_2031.jpg"), poliza: await elegida("poliza auto.txt") };
+    console.log(`  Sugerencias: ${JSON.stringify(sugerencias)}`);
+    assert.equal(sugerencias.factura, "Facturas");
+    // Un recibo de alquiler es ambiguo (Facturas o Contratos): aquí el usuario corrige la sugerencia.
+    assert.ok(["Facturas", "Contratos"].includes(sugerencias.foto), "el recibo leído con OCR va a una carpeta descrita");
+    await pagina.getByLabel("Carpeta para IMG_2031.jpg").selectOption("Facturas");
+    assert.equal(sugerencias.poliza, "Seguros");
+    assert.match(await pagina.locator(".subir").textContent(), /\(sugerida\)/);
+  }
   await pagina.screenshot({ path: resolve(raiz, "e2e/captura-subir.png") });
   await guardar.click();
   await pagina.getByText("3 archivos guardados en tu carpeta.").waitFor({ timeout: 30_000 });
@@ -245,11 +313,22 @@ try {
   });
   assert.deepEqual(escritos, { Facturas: ["IMG_2031.jpg", "factura B0100004521.pdf", "factura luz.pdf"], Seguros: ["poliza auto.txt"] });
 
+  // En la portada aparece el par de copias, y se puede descartar.
+  await pagina.getByLabel("Buscar").fill("");
+  const dup = pagina.getByLabel("Duplicados");
+  await dup.getByText("Copia exacta").waitFor();
+  assert.match(await dup.textContent(), /IMG_2031\.jpg y recibo\.jpg|recibo\.jpg y IMG_2031\.jpg/);
+  assert.equal(await dup.locator("li").count(), 1, "sin falsos positivos");
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-alertas.png") });
+  await dup.getByRole("button", { name: "No son duplicados" }).click();
+  await dup.getByText("No encontré copias").waitFor();
+
   // Subir otra vez un archivo con el mismo nombre no reemplaza el anterior.
   await pagina.getByLabel("Elegir archivos para subir").setInputFiles([
     { name: "poliza auto.txt", mimeType: "text/plain", buffer: Buffer.from("Endoso de la poliza de seguro: cambio de placa.") },
   ]);
   await pagina.waitForFunction(() => !document.querySelector(".subir .primario")?.hasAttribute("disabled"), null, { timeout: 60_000 });
+  if (sinIa) await pagina.getByLabel("Carpeta para poliza auto.txt").selectOption("Seguros");
   await pagina.locator(".subir").getByRole("button", { name: "Guardar" }).click();
   await pagina.getByText("Guardado en Seguros/poliza auto (2).txt (ya había uno con ese nombre)").waitFor({ timeout: 30_000 });
   await pagina.getByRole("button", { name: "Cerrar" }).click();
@@ -269,6 +348,7 @@ try {
 
   // La fila de recientes sigue al cursor: al llevarlo a la derecha, se desplaza.
   const recientes = pagina.getByRole("list", { name: "Documentos recientes" });
+  await recientes.scrollIntoViewIfNeeded();
   const caja = await recientes.boundingBox();
   await pagina.mouse.move(caja.x + caja.width / 2, caja.y + caja.height / 2);
   await pagina.mouse.move(caja.x + caja.width - 4, caja.y + caja.height / 2, { steps: 8 });
@@ -285,6 +365,9 @@ try {
   assert.equal((hoja.match(/<row /g) ?? []).length, 14, "encabezado y 13 documentos");
   assert.match(hoja, /Código.*Nombre.*Carpeta/s);
   assert.match(hoja, />DV-000001</);
+  assert.match(hoja, /Vence.*Origen de la fecha/s);
+  assert.match(hoja, />arrendamiento local\.pdf<.*?>30 jun 2027<.*?>Leída en el documento</s);
+  assert.match(hoja, />factura B0100004521\.pdf<.*?>1 dic 2026<.*?>Escrita a mano</s);
   assert.match(hoja, new RegExp(`>${codigoActo}<.*?>acto de venta\\.docx<.*?>Contratos<`, "s"));
 
   // Los códigos también quedan en la carpeta del usuario (.docvault/codigos.json).

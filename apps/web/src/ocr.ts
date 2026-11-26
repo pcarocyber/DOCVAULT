@@ -6,6 +6,7 @@
 import type { Indice } from "@docvault/indice";
 import { MotorOcr, configurarMotores, pdfAImagenes } from "@docvault/core/navegador";
 import { archivoPorRuta } from "./carpeta";
+import { venceDe } from "./indexar";
 
 configurarMotores({
   tesseractWorker: new URL("/motores/tesseract/worker.min.js", location.href).href,
@@ -47,11 +48,13 @@ export class ColaOcr {
           const archivo = await archivoPorRuta(raiz, doc.id);
           const l = await leerConOcr(this.motor, archivo, doc.tipo ?? "");
           indice.ponerTexto(doc.id, l.texto, l.estado, l.confianza);
+          indice.ponerVencimiento(doc.id, venceDe(l.texto, l.estado)!);
           if (l.estado === "sin texto") r.vacios++;
           else if (l.confianza != null && l.confianza < CONFIANZA_MINIMA) r.dudosos++;
           r.leidos++;
         } catch {
           indice.ponerTexto(doc.id, "", "error", null);
+          indice.ponerVencimiento(doc.id, venceDe("", "error")!);
           r.errores++;
         }
         if ((i + 1) % GUARDAR_CADA === 0) await guardar();
