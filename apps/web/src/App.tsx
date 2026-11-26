@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Indice, type EstadoVence, type FichaDocumento } from "@docvault/indice";
 import { duplicadosEnBoveda, leerCodigo, UMBRALES_DUPLICADOS, type Par } from "@docvault/core";
 import { Alertas } from "./Alertas";
+import { Comparar } from "./Comparar";
+import { Papelera } from "./Papelera";
+import { borrarParaSiempre, leerPapelera, moverAPapelera, recuperar, type EnPapelera } from "./papelera";
 import { avisarVencimientos } from "./avisos";
 import { aplicarGuardados, guardarDecision, guardarVencimientosEnCarpeta, leerVencimientosGuardados } from "./vencimientos";
 import {
@@ -15,7 +18,7 @@ import { Documentos, dudoso, ESTADOS, nombreDe, type Elemento } from "./Document
 import { descargarExcel } from "./exportar";
 import { Ficha } from "./Ficha";
 import { Subir } from "./Subir";
-import { actualizarIndice, type Avance, type ResumenIndexado } from "./indexar";
+import { actualizarIndice, fichaDe, hashDe, leerTexto, type Avance, type ResumenIndexado } from "./indexar";
 import { ColaOcr, type AvanceOcr, type ResumenOcr } from "./ocr";
 
 type Pantalla = "cargando" | "incompatible" | "sin-carpeta" | "sin-permiso" | "lista";
@@ -48,6 +51,9 @@ export function App() {
   const [soloCarpeta, setSoloCarpeta] = useState(true);
   const elegirArchivos = useRef<HTMLInputElement>(null);
   const [duplicados, setDuplicados] = useState<Par[]>([]);
+  const [comparando, setComparando] = useState<Par | null>(null);
+  const [papelera, setPapelera] = useState<EnPapelera[]>([]);
+  const [verPapelera, setVerPapelera] = useState(false);
   const cacheHuellas = useRef(new Map<string, { clave: string; huella: Set<string>; firma: Uint32Array }>());
 
   /** Busca duplicados en toda la bóveda (sin los pares que el usuario dijo que no lo son). */
@@ -111,6 +117,7 @@ export function App() {
       setDocs(indice.current.listar());
       revisarDuplicados();
       avisar();
+      setPapelera(await leerPapelera(h));
       setResumen(r);
       await releerCarpetas(h);
     } catch (e) {
@@ -235,6 +242,47 @@ export function App() {
     idx.ponerAjuste("duplicados_ignorados", JSON.stringify([...ignorados]));
     await guardarIndice(idx.exportar());
     setDuplicados((d) => d.filter((x) => x !== p));
+  };
+
+  /** Después de quitar o recuperar archivos: guardar todo y volver a mirar duplicados. */
+  const despuesDeCambiar = async () => {
+    const idx = indice.current;
+    if (!idx || !carpeta) return;
+    await guardarIndice(idx.exportar());
+    await guardarCodigosEnCarpeta(carpeta, idx);
+    await guardarVencimientosEnCarpeta(carpeta, idx);
+    setDocs(idx.listar());
+    revisarDuplicados();
+    setPapelera(await leerPapelera(carpeta));
+  };
+
+  const quitarDuplicado = async (id: string, otro: string) => {
+    const idx = indice.current;
+    if (!idx || !carpeta) return;
+    await moverAPapelera(carpeta, idx, id, `duplicado de ${otro.split("/").at(-1)}`);
+    if (elegido === id) setElegido(null);
+    await despuesDeCambiar();
+    setAviso(`«${id.split("/").at(-1)}» está en la papelera. Puedes recuperarlo desde «Papelera».`);
+  };
+
+  const recuperarDePapelera = async (e: EnPapelera) => {
+    const idx = indice.current;
+    if (!idx || !carpeta) return;
+    const { ruta, archivo } = await recuperar(carpeta, e);
+    const { texto, estado } = await leerTexto(archivo);
+    const codigo = e.codigo && !idx.porCodigo(e.codigo) ? e.codigo : null;
+    idx.agregar([fichaDe(ruta, archivo, texto, estado, null, codigo, await hashDe(archivo))]);
+    asignarFaltantes(idx, await leerCodigosGuardados(carpeta));
+    aplicarGuardados(idx, await leerVencimientosGuardados(carpeta));
+    await despuesDeCambiar();
+    setAviso(`Recuperé «${ruta.split("/").at(-1)}» en ${ruta.includes("/") ? ruta.slice(0, ruta.lastIndexOf("/")) : "la carpeta principal"}.`);
+    if (estado === "pendiente de OCR") empezarOcr(carpeta);
+  };
+
+  const borrarDePapelera = async (e: EnPapelera) => {
+    if (!carpeta) return;
+    await borrarParaSiempre(carpeta, e);
+    setPapelera(await leerPapelera(carpeta));
   };
 
   /** Resultados: primero el documento cuyo código se escribió, luego los del texto. */
@@ -397,6 +445,10 @@ export function App() {
         {error && <p className="error">{error}</p>}
         {aviso && <p className="estado" role="status">{aviso}</p>}
 
+        {verPapelera && (
+          <Papelera archivos={papelera} alRecuperar={recuperarDePapelera} alBorrar={borrarDePapelera} alCerrar={() => setVerPapelera(false)} />
+        )}
+
         {subiendo && carpeta && indice.current && (
           <Subir
             raiz={carpeta} indice={indice.current} carpetas={carpetas} archivos={subiendo}
@@ -410,6 +462,7 @@ export function App() {
               setDocs(idx.listar());
               revisarDuplicados();
               avisar();
+              setPapelera(await leerPapelera(carpeta));
               await releerCarpetas(carpeta);
               setAviso(`${rutas.length} ${rutas.length === 1 ? "archivo guardado" : "archivos guardados"} en tu carpeta.`);
             }}
@@ -435,7 +488,10 @@ export function App() {
         ) : carpeta && (
           <>
             {docs.length > 0 && abierta === null && (
-              <Alertas docs={docs} porId={porId} duplicados={duplicados} alElegir={setElegido} alIgnorar={ignorarDuplicado} alActivarAvisos={avisar} />
+              <Alertas
+                docs={docs} porId={porId} duplicados={duplicados} alElegir={setElegido} alIgnorar={ignorarDuplicado} alActivarAvisos={avisar}
+                alComparar={setComparando} papelera={papelera.length} alVerPapelera={() => setVerPapelera(true)}
+              />
             )}
             <Carpetas raiz={carpeta} carpetas={resumenCarpetas} abierta={abierta} alAbrir={setAbierta} alCambiar={() => releerCarpetas(carpeta)} />
 
@@ -465,6 +521,21 @@ export function App() {
           </>
         )}
       </main>
+
+      {comparando && carpeta && indice.current && porId.get(comparando.a) && porId.get(comparando.b) && (
+        <Comparar
+          modo="boveda" raiz={carpeta} par={comparando}
+          a={{ tipo: "boveda", doc: porId.get(comparando.a)!, texto: indice.current.texto(comparando.a) ?? "" }}
+          b={{ tipo: "boveda", doc: porId.get(comparando.b)!, texto: indice.current.texto(comparando.b) ?? "" }}
+          alCerrar={() => setComparando(null)}
+          alDecidir={async (d) => {
+            const p = comparando;
+            if (d === "no son") await ignorarDuplicado(p);
+            else if (d !== "dejar") await quitarDuplicado(d.quitar, d.quitar === p.a ? p.b : p.a);
+            setComparando(null);
+          }}
+        />
+      )}
 
       {ficha && carpeta && (
         <Ficha

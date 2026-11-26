@@ -13,6 +13,8 @@ import { guardarArchivo, pedirEscritura, type Carpeta } from "./carpeta";
 import { extension, fichaDe, hashDe, leerTexto, venceDe } from "./indexar";
 import { leerConOcr } from "./ocr";
 import { sugerirCarpeta } from "./sugerir";
+import { Comparar, type DecisionSubida, type Lado } from "./Comparar";
+import { moverAPapelera } from "./papelera";
 
 /** "" es la carpeta principal (fuera de toda subcarpeta). */
 const PRINCIPAL = "";
@@ -34,6 +36,10 @@ interface Subida {
   parecidos: Coincidencia[];
   /** Si se guarda al pulsar Guardar. Una copia exacta empieza sin marcar. */
   guardar: boolean;
+  /** Documento de la bóveda que este reemplaza (va a la papelera al guardar). */
+  reemplaza?: string;
+  /** Lo que el usuario eligió al comparar, para mostrarlo. */
+  decidido?: DecisionSubida;
 }
 
 interface Props {
@@ -59,6 +65,7 @@ export function Subir({ raiz, indice, carpetas, archivos, alGuardar, alCerrar, a
   const [guardando, setGuardando] = useState(false);
   const [avisoIa, setAvisoIa] = useState<string | null>(null);
   const [guardadoUnaVez, setGuardadoUnaVez] = useState(false);
+  const [comparando, setComparando] = useState<number | null>(null);
   const cancelado = useRef(false);
 
   const cambiar = (i: number, cambio: Partial<Subida>) =>
@@ -135,6 +142,7 @@ export function Subir({ raiz, indice, carpetas, archivos, alGuardar, alCerrar, a
       for (const [i, s] of subidas.entries()) {
         if (s.fase !== "lista" || !s.guardar) continue;
         try {
+          if (s.reemplaza) await moverAPapelera(raiz, indice, s.reemplaza, `reemplazado por ${s.archivo.name}`);
           const { ruta, guardado } = await guardarArchivo(raiz, s.elegida, s.archivo);
           indice.agregar([fichaDe(ruta, guardado, s.texto, s.estado, s.confianza, null, s.hash, s.vence)]);
           rutas.push(ruta);
@@ -152,8 +160,33 @@ export function Subir({ raiz, indice, carpetas, archivos, alGuardar, alCerrar, a
 
   const todoGuardado = subidas.every((s) => s.fase === "guardada" || s.fase === "error" || (s.fase === "lista" && !s.guardar && guardadoUnaVez));
 
+  const enComparacion = comparando != null ? subidas[comparando] : null;
+  const ladoParecido = (id: string): Lado => {
+    if (id.startsWith(DE_ESTA_SUBIDA)) {
+      const j = Number(id.slice(DE_ESTA_SUBIDA.length));
+      return { tipo: "nuevo", archivo: subidas[j].archivo, texto: subidas[j].texto };
+    }
+    return { tipo: "boveda", doc: indice.porId(id)!, texto: indice.texto(id) ?? "" };
+  };
+
   return (
     <div className="panel subir" role="dialog" aria-label="Subir archivos">
+      {enComparacion && comparando != null && enComparacion.parecidos[0] && (
+        <Comparar
+          modo="subida" raiz={raiz} par={enComparacion.parecidos[0]}
+          a={{ tipo: "nuevo", archivo: enComparacion.archivo, texto: enComparacion.texto }}
+          b={ladoParecido(enComparacion.parecidos[0].id)}
+          alCerrar={() => setComparando(null)}
+          alDecidir={async (d) => {
+            const otro = enComparacion.parecidos[0].id;
+            cambiar(comparando, {
+              guardar: d !== "no agregar", decidido: d,
+              reemplaza: d === "reemplazar" && !otro.startsWith(DE_ESTA_SUBIDA) ? otro : undefined,
+            });
+            setComparando(null);
+          }}
+        />
+      )}
       <h3>Subir {archivos.length === 1 ? "1 archivo" : `${archivos.length} archivos`}</h3>
       {carpetas.length === 0 && <p className="nota">No tienes carpetas todavía: se guardarán en la carpeta principal. Crea carpetas para recibir sugerencias.</p>}
       {avisoIa && <p className="error">{avisoIa}</p>}
@@ -185,10 +218,14 @@ export function Subir({ raiz, indice, carpetas, archivos, alGuardar, alCerrar, a
                     </p>
                   );
                 })}
-                <label className="marcar">
-                  <input type="checkbox" checked={s.guardar} onChange={(e) => cambiar(i, { guardar: e.target.checked })} />
-                  {s.parecidos[0].tipo === "exacto" ? "Guardar otra copia de todos modos" : "Guardarlo también"}
-                </label>
+                {s.decidido && <p className="decidido">{s.decidido === "no agregar" ? "Decidiste no agregarlo." : s.decidido === "agregar" ? "Decidiste agregarlo como sea." : "Se agregará y el que ya estaba irá a la papelera."}</p>}
+                <div className="acciones">
+                  <button onClick={() => setComparando(i)}>Comparar lado a lado</button>
+                  <label className="marcar">
+                    <input type="checkbox" checked={s.guardar} onChange={(e) => cambiar(i, { guardar: e.target.checked, reemplaza: undefined, decidido: undefined })} />
+                    {s.parecidos[0].tipo === "exacto" ? "Guardar otra copia de todos modos" : "Guardarlo también"}
+                  </label>
+                </div>
               </div>
             )}
             {s.fase === "lista" && s.guardar && (

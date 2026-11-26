@@ -278,7 +278,19 @@ try {
   assert.equal(await avisoDup.count(), 1, "solo la foto repetida tiene aviso");
   assert.match(await avisoDup.textContent(), /Copia exacta de recibo\.jpg \(DV-\d{6}\), que ya está en tu bóveda/);
   assert.match(await pagina.locator(".subir").textContent(), /factura luz\.pdf.*Vence: 20 dic 2026 \(vence en 24 días\)/s, "al subir se ve la fecha de vencimiento");
-  await pagina.getByLabel("Guardar otra copia de todos modos").check();
+  // Comparar lado a lado y decidir agregarla como sea.
+  await avisoDup.getByRole("button", { name: "Comparar lado a lado" }).click();
+  const comparar = pagina.getByRole("dialog", { name: "Comparar documentos" });
+  await comparar.getByText("¿Quieres agregarlo como sea o dejarlo así?").waitFor();
+  assert.match(await comparar.getByLabel(/^El que estás subiendo/).textContent(), /IMG_2031\.jpg/);
+  assert.match(await comparar.getByLabel(/^El que ya está en tu bóveda/).textContent(), /recibo\.jpg.*DV-\d{6}.*RECIBO/s);
+  await comparar.locator(".previa img").first().waitFor();
+  await pagina.waitForTimeout(400);
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-comparar-subida.png") });
+  await comparar.getByRole("button", { name: "Agregarlo como sea" }).click();
+  await comparar.waitFor({ state: "detached" });
+  assert.match(await avisoDup.textContent(), /Decidiste agregarlo como sea/);
+  assert.equal(await pagina.getByLabel("Guardar otra copia de todos modos").isChecked(), true);
   const elegida = (n) => pagina.getByLabel(`Carpeta para ${n}`).inputValue();
   // Sin el modelo en bench/modelos y sin acceso a Hugging Face, la IA básica no carga:
   // la app lo dice y el usuario elige a mano. Así la prueba sigue con lo demás.
@@ -320,6 +332,36 @@ try {
   assert.match(await dup.textContent(), /IMG_2031\.jpg y recibo\.jpg|recibo\.jpg y IMG_2031\.jpg/);
   assert.equal(await dup.locator("li").count(), 1, "sin falsos positivos");
   await pagina.screenshot({ path: resolve(raiz, "e2e/captura-alertas.png") });
+  // Comparar en la portada y quitar la copia: va a la papelera, no se borra.
+  await dup.getByRole("button", { name: /^Comparar / }).click();
+  const comparar2 = pagina.getByRole("dialog", { name: "Comparar documentos" });
+  await comparar2.getByRole("heading", { name: "¿Son duplicados?" }).waitFor();
+  await comparar2.locator(".previa img").nth(1).waitFor();
+  await pagina.waitForTimeout(400);
+  await pagina.screenshot({ path: resolve(raiz, "e2e/captura-comparar.png") });
+  await comparar2.getByLabel(/IMG_2031\.jpg$/).getByRole("button", { name: "Sí, quitar este" }).click();
+  await comparar2.waitFor({ state: "detached" });
+  await pagina.getByText("«IMG_2031.jpg» está en la papelera").waitFor();
+  await dup.getByText("No encontré copias").waitFor();
+  const enDisco = await pagina.evaluate(async () => {
+    const raiz = await (await navigator.storage.getDirectory()).getDirectoryHandle("Mis documentos");
+    const nombres = async (d) => { const n = []; for await (const h of d.values()) n.push(h.name); return n.sort(); };
+    const pap = await (await raiz.getDirectoryHandle(".docvault")).getDirectoryHandle("papelera");
+    return { facturas: await nombres(await raiz.getDirectoryHandle("Facturas")), papelera: await nombres(pap) };
+  });
+  assert.ok(!enDisco.facturas.includes("IMG_2031.jpg"), "ya no está en Facturas");
+  assert.equal(enDisco.papelera.length, 1);
+  assert.match(enDisco.papelera[0], /IMG_2031\.jpg$/);
+  // Recuperarlo desde la papelera: vuelve a su lugar con su código.
+  await dup.getByRole("button", { name: "Papelera (1)" }).click();
+  const pap = pagina.getByRole("dialog", { name: "Papelera" });
+  assert.match(await pap.textContent(), /IMG_2031\.jpg.*estaba en Facturas\/IMG_2031\.jpg/s);
+  await pap.getByRole("button", { name: "Recuperar" }).click();
+  await pagina.getByText("Recuperé «IMG_2031.jpg» en Facturas.").waitFor();
+  await pap.getByText("La papelera está vacía.").waitFor();
+  await pap.getByRole("button", { name: "Cerrar" }).click();
+  // El par vuelve; esta vez el usuario dice que no son duplicados.
+  await dup.getByText("Copia exacta").waitFor();
   await dup.getByRole("button", { name: "No son duplicados" }).click();
   await dup.getByText("No encontré copias").waitFor();
 
