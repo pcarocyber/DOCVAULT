@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Indice, type EstadoVence, type FichaDocumento } from "@docvault/indice";
 import { duplicadosEnBoveda, leerCodigo, UMBRALES_DUPLICADOS, type ClaveGuardada, type Par } from "@docvault/core";
-import { AjustesClave, PedirClave } from "./Clave";
+import { AjustesClave, PedirClave } from "./PanelClave";
 import { leerClave } from "./clave";
 import { Alertas } from "./Alertas";
 import { Comparar } from "./Comparar";
