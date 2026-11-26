@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { code128, detectarMovidos, formatearCodigo, leerCodigo, numeroDeCodigo } from "../src/codigos";
+import { BarcodeFormat, BinaryBitmap, DecodeHintType, HybridBinarizer, MultiFormatReader, RGBLuminanceSource } from "@zxing/library";
+import { code128, valoresCode128, detectarMovidos, formatearCodigo, leerCodigo, numeroDeCodigo } from "../src/codigos";
 
 describe("código del documento", () => {
   it("formatea y reconoce códigos escritos de varias formas", () => {
     expect(formatearCodigo(123)).toBe("DV-000123");
     expect(numeroDeCodigo("DV-000123")).toBe(123);
-    for (const t of ["DV-000123", "dv-123", "DV 000123", "dv000123", " 000123 "]) expect(leerCodigo(t)).toBe("DV-000123");
+    for (const t of ["DV-000123", "dv-123", "DV 000123", "dv000123", " 000123 ", "DV'000123", "DV_000123", "https://docvault.app/#DV-000123"]) expect(leerCodigo(t)).toBe("DV-000123");
     for (const t of ["123", "2027", "factura", "DV-", "DV-12a"]) expect(leerCodigo(t)).toBeNull();
   });
 
@@ -33,14 +34,26 @@ describe("código del documento", () => {
   });
 });
 
+/** Lee las barras con ZXing (otra implementación), como las vería una cámara: 3 px por módulo. */
+function leerConZxing(texto: string): string {
+  const { barras, ancho } = code128(texto);
+  const px = 3, alto = 40, w = ancho * px;
+  const lum = new Uint8ClampedArray(w * alto).fill(255);
+  for (const b of barras) for (let y = 0; y < alto; y++) lum.fill(0, y * w + b.x * px, y * w + (b.x + b.ancho) * px);
+  const fuente = new RGBLuminanceSource(lum, w, alto);
+  const pistas = new Map([[DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.CODE_128]]]);
+  return new MultiFormatReader().decode(new BinaryBitmap(new HybridBinarizer(fuente)), pistas).getText();
+}
+
 describe("Code 128", () => {
-  it("produce las barras de DV-000123 (verificadas con otra implementación)", () => {
-    const { barras, ancho } = code128("DV-000123");
-    expect(ancho).toBe(154);
-    expect(barras.slice(0, 4)).toEqual([{ x: 10, ancho: 2 }, { x: 13, ancho: 1 }, { x: 16, ancho: 1 }, { x: 21, ancho: 1 }]);
-    expect(barras.at(-1)).toEqual({ x: 142, ancho: 2 });
+  it("usa el juego C para las cifras: DV-000123 es más corto", () => {
+    expect(valoresCode128("DV-000123")).toEqual([104, 36, 54, 13, 99, 0, 1, 23, 26, 106]);
+    expect(code128("DV-000123").ancho).toBe(132); // antes 154 (solo juego B)
   });
-  it("rechaza caracteres que Code 128-B no tiene", () => {
+  it("ZXing lee lo que dibujamos", () => {
+    for (const t of ["DV-000123", "DV-000001", "DV-999999", "DV-1234567", "ABC", "12345", "A1"]) expect(leerConZxing(t)).toBe(t);
+  });
+  it("rechaza caracteres que Code 128 no tiene", () => {
     expect(() => code128("Ñ")).toThrow();
   });
 });

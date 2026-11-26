@@ -8,8 +8,8 @@ import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf
 import qrcode from "qrcode-generator";
 import { code128 } from "@docvault/core";
 
-/** Alto de la franja en puntos (72 por pulgada): unos 3,2 cm. */
-const FRANJA = 90;
+/** Alto de la franja en puntos (72 por pulgada): unos 4 cm. QR de 3 cm, para que la cámara lo lea aunque esté algo borroso. */
+const FRANJA = 114;
 /** Margen que muchas impresoras no imprimen (borde de la hoja): ahí no se dibuja nada. */
 const BORDE = 22;
 /** En las demás páginas, una línea pequeña con el código. */
@@ -60,13 +60,16 @@ function dibujarFranja(page: PDFPage, codigo: string, x: number, y: number, anch
   const lado = FRANJA - BORDE - 8;
   dibujarQr(page, codigo, x + BORDE, y + BORDE, lado);
   const xb = x + BORDE + lado + 14;
-  const anchoBarras = dibujarBarras(page, codigo, xb, y + BORDE + 16, lado - 18, 1);
+  // Barras gruesas (1,8 pt por módulo, ≈ 0,6 mm) para que la cámara de la computadora las lea;
+  // en una página angosta (un recibo) se achican para caber.
+  const modulo = Math.max(0.6, Math.min(1.8, (x + ancho - BORDE - xb) / code128(codigo).ancho));
+  const anchoBarras = dibujarBarras(page, codigo, xb, y + BORDE + 16, lado - 18, modulo);
   page.drawText(codigo, { x: xb + 10, y: y + BORDE + 3, size: 11, font: negrita, color: NEGRO });
   const xt = xb + anchoBarras + 16;
   if (xt + 90 < x + ancho) {
-    page.drawText("DOCVAULT", { x: xt, y: y + BORDE + 34, size: 9, font: negrita, color: GRIS });
-    page.drawText("Escanea el código o escríbelo", { x: xt, y: y + BORDE + 21, size: 8, font: normal, color: GRIS });
-    page.drawText("en el buscador para abrirlo.", { x: xt, y: y + BORDE + 11, size: 8, font: normal, color: GRIS });
+    page.drawText("DOCVAULT", { x: xt, y: y + BORDE + 46, size: 9, font: negrita, color: GRIS });
+    page.drawText("Escanea el código o escríbelo", { x: xt, y: y + BORDE + 33, size: 8, font: normal, color: GRIS });
+    page.drawText("en el buscador para abrirlo.", { x: xt, y: y + BORDE + 23, size: 8, font: normal, color: GRIS });
   }
 }
 

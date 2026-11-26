@@ -100,7 +100,8 @@ await pagina.addInitScript(() => {
     close() {}
   };
 });
-// Cámara de mentira: un video que muestra el QR puesto en window.__qrFalso.
+// Cámara de mentira: un video que muestra el QR puesto en window.__qrFalso,
+// o una foto (window.__fotoFalsa, una imagen ya cargada).
 await pagina.addInitScript(() => {
   navigator.mediaDevices.getUserMedia = async () => {
     const c = document.createElement("canvas");
@@ -108,6 +109,8 @@ await pagina.addInitScript(() => {
     const ctx = c.getContext("2d");
     const pintar = () => {
       ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 640, 480);
+      const f = window.__fotoFalsa;
+      if (f) { const k = Math.min(640 / f.width, 480 / f.height); ctx.drawImage(f, (640 - f.width * k) / 2, (480 - f.height * k) / 2, f.width * k, f.height * k); return; }
       const m = window.__qrFalso;
       if (!m) return;
       const t = Math.floor(360 / (m.n + 8)), x0 = (640 - m.n * t) / 2, y0 = (480 - m.n * t) / 2;
@@ -484,8 +487,9 @@ try {
   assert.equal(conCodigo.suggestedFilename(), `arrendamiento local ${codigoArr}.pdf`);
   const pdfEstampado = await PDFDocument.load(readFileSync(await conCodigo.path()));
   assert.equal(pdfEstampado.getPageCount(), 1);
-  assert.deepEqual(pdfEstampado.getPage(0).getMediaBox(), { x: 0, y: -90, width: 612, height: 882 }, "la página se alarga para la franja");
-  assert.equal(leerQrDePdf(await conCodigo.path()), codigoArr, "el QR impreso se puede leer");
+  assert.deepEqual(pdfEstampado.getPage(0).getMediaBox(), { x: 0, y: -114, width: 612, height: 906 }, "la página se alarga para la franja");
+  const rutaArr = await conCodigo.path();
+  assert.equal(leerQrDePdf(rutaArr), codigoArr, "el QR impreso se puede leer");
   // Imprimir: el PDF se carga en un marco invisible y se abre el cuadro de imprimir.
   // Aquí se anotan esos marcos (y las pestañas nuevas) para revisar lo que se iba a imprimir.
   await pagina.evaluate(() => {
@@ -508,15 +512,15 @@ try {
   assert.equal(leerQrDePdf(et.ruta), codigoArr, "el QR de la etiqueta se puede leer");
   await imprimir.getByRole("button", { name: "Imprimir con código" }).click();
   const imp = await ultimoPdf(2);
-  assert.equal(imp.pdf.getPage(0).getHeight(), 882, "«Imprimir con código» imprime con la franja");
+  assert.equal(imp.pdf.getPage(0).getHeight(), 906, "«Imprimir con código» imprime con la franja");
   assert.equal(leerQrDePdf(imp.ruta), codigoArr);
   // Cmd + P (Ctrl + P) con la ficha abierta también imprime con la franja, no la pantalla.
   await pagina.keyboard.press("ControlOrMeta+p");
-  assert.equal((await ultimoPdf(3)).pdf.getPage(0).getHeight(), 882, "Cmd + P imprime con la franja");
+  assert.equal((await ultimoPdf(3)).pdf.getPage(0).getHeight(), 906, "Cmd + P imprime con la franja");
   // «Abrir documento» abre el PDF con su código: si se imprime desde esa pestaña, sale con la franja.
   await ficha.getByRole("button", { name: "Abrir documento" }).click();
   const abierto = await ultimoPdf(4);
-  assert.equal(abierto.pdf.getPage(0).getHeight(), 882, "«Abrir documento» muestra la franja");
+  assert.equal(abierto.pdf.getPage(0).getHeight(), 906, "«Abrir documento» muestra la franja");
   assert.equal(leerQrDePdf(abierto.ruta), codigoArr);
   await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
 
@@ -527,7 +531,7 @@ try {
   const [fotoConCodigo] = await Promise.all([pagina.waitForEvent("download"), imprimir.getByRole("button", { name: "Descargar con código" }).click()]);
   await fotoConCodigo.saveAs(resolve(raiz, "e2e/captura-estampado.pdf"));
   const pdfFoto = await PDFDocument.load(readFileSync(await fotoConCodigo.path()));
-  assert.equal(pdfFoto.getPage(0).getHeight(), 882);
+  assert.equal(pdfFoto.getPage(0).getHeight(), 906);
   assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoRecibo);
   assert.equal(leerQrDePdf(await fotoConCodigo.path()), codigoRecibo);
   // Un Word no se puede estampar: solo se ofrece la etiqueta.
@@ -561,6 +565,29 @@ try {
   await ficha.waitFor({ timeout: 15_000 });
   assert.equal(await escaner.count(), 0, "el escáner se cierra al leer el código");
   assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoRecibo, "la cámara abre la ficha");
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+
+  // Solo el código de barras (el QR tapado), tomado de la franja impresa del PDF: también abre la ficha.
+  const dirFoto = mkdtempSync(resolve(tmpdir(), "dv-foto-"));
+  execFileSync("pdftoppm", ["-r", "100", "-png", "-f", "1", "-l", "1", "-x", "0", "-y", "1080", "-W", "850", "-H", "178", rutaArr, resolve(dirFoto, "f")]);
+  const foto = resolve(dirFoto, readdirSync(dirFoto).find((n) => n.endsWith(".png")));
+  execFileSync("convert", [foto, "-fill", "white", "-draw", "rectangle 0,0 160,178", foto]);
+  await pagina.evaluate(async (b64) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${b64}`;
+    await img.decode();
+    window.__qrFalso = null; window.__fotoFalsa = img;
+  }, readFileSync(foto).toString("base64"));
+  await pagina.getByRole("button", { name: "Escanear" }).click();
+  await ficha.waitFor({ timeout: 15_000 });
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoArr, "la cámara lee el código de barras impreso");
+  await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
+
+  // Un lector USB con el teclado en español escribe ' en vez de -: igual abre la ficha.
+  await pagina.evaluate(() => document.activeElement?.blur());
+  await pagina.keyboard.type(`${codigoRecibo.replace("-", "'")}\n`);
+  await ficha.waitFor();
+  assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoRecibo, "lector USB con teclado en español");
   await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
   console.log("  Imprimir con código, etiqueta, lector USB y cámara: bien.");
 

@@ -252,7 +252,7 @@ export function App() {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
       const ahora = performance.now();
-      if (ahora - ultima > 60) buffer = "";
+      if (ahora - ultima > 100) buffer = ""; // un lector USB "teclea" cada pocos milisegundos
       ultima = ahora;
       if (e.key === "Enter") {
         const c = buffer.length >= 6 ? leerCodigo(buffer) : null;
@@ -430,7 +430,10 @@ export function App() {
             value={consulta} onChange={(e) => setConsulta(e.target.value)} aria-label="Buscar"
             onKeyDown={(e) => {
               // Un lector de código de barras escribe el código y pulsa Enter: abre la ficha.
-              if (e.key === "Enter" && resultados?.exacto?.codigo) abrirPorCodigo(resultados.exacto.codigo);
+              if (e.key === "Enter") {
+                const c = resultados?.exacto?.codigo ?? leerCodigo(consulta);
+                if (c && !abrirPorCodigo(c)) setAviso(`${c} no está en esta bóveda.`);
+              }
               if (e.key === "Escape") setConsulta("");
             }}
           />

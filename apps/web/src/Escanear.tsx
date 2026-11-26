@@ -1,7 +1,7 @@
 /**
  * Escanear un código con la cámara de la computadora. Usa el lector de códigos
  * del propio Chrome (BarcodeDetector, que lee QR y Code 128) cuando lo hay;
- * si no, jsQR, que lee solo el QR. Nada sale del equipo: la imagen se analiza
+ * si no, jsQR (QR) y ZXing (código de barras). Nada sale del equipo: la imagen se analiza
  * en el navegador y no se guarda.
  */
 import { useEffect, useRef, useState } from "react";
@@ -15,39 +15,66 @@ interface Props {
 
 interface Detector { detect(fuente: CanvasImageSource): Promise<{ rawValue: string }[]> }
 
-async function crearDetector(): Promise<{ detectar: (v: HTMLVideoElement, c: HTMLCanvasElement) => Promise<string[]>; formatos: string }> {
+type Detectar = (v: HTMLVideoElement, c: HTMLCanvasElement) => Promise<string[]>;
+
+/** Copia el cuadro actual del video a un lienzo (como mucho 1280 px de ancho) y devuelve sus píxeles. */
+function cuadro(v: HTMLVideoElement, c: HTMLCanvasElement): ImageData | null {
+  const ancho = Math.min(v.videoWidth, 1280);
+  const alto = Math.round((v.videoHeight / v.videoWidth) * ancho);
+  if (!ancho || !alto) return null;
+  c.width = ancho; c.height = alto;
+  const ctx = c.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(v, 0, 0, ancho, alto);
+  return ctx.getImageData(0, 0, ancho, alto);
+}
+
+/** Lector de respaldo: jsQR para el QR y ZXing para el código de barras (Code 128). */
+async function detectorDeRespaldo(): Promise<Detectar> {
+  const [{ default: jsQR }, zx] = await Promise.all([import("jsqr"), import("@zxing/library")]);
+  const pistas = new Map<number, unknown>([
+    [zx.DecodeHintType.POSSIBLE_FORMATS, [zx.BarcodeFormat.CODE_128, zx.BarcodeFormat.QR_CODE]],
+    [zx.DecodeHintType.TRY_HARDER, true],
+  ]);
+  const lector = new zx.MultiFormatReader();
+  lector.setHints(pistas);
+  return async (v, c) => {
+    const img = cuadro(v, c);
+    if (!img) return [];
+    const qr = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
+    if (qr?.data) return [qr.data];
+    // ZXing trabaja con brillo (un número por píxel).
+    const lum = new Uint8ClampedArray(img.width * img.height);
+    for (let i = 0, j = 0; i < lum.length; i++, j += 4) lum[i] = (img.data[j]! * 77 + img.data[j + 1]! * 150 + img.data[j + 2]! * 29) >> 8;
+    try {
+      const fuente = new zx.RGBLuminanceSource(lum, img.width, img.height);
+      return [lector.decodeWithState(new zx.BinaryBitmap(new zx.HybridBinarizer(fuente))).getText()];
+    } catch { return []; }
+    finally { lector.reset(); }
+  };
+}
+
+/**
+ * El lector de códigos del propio Chrome (BarcodeDetector) cuando lee QR y Code 128,
+ * como en Mac; si no, el de respaldo. Siempre se leen los dos: QR y código de barras.
+ */
+async function crearDetector(): Promise<Detectar> {
   const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): Detector; getSupportedFormats(): Promise<string[]> } }).BarcodeDetector;
   if (BD) {
     try {
       const soportados = await BD.getSupportedFormats();
-      const formatos = ["qr_code", "code_128"].filter((f) => soportados.includes(f));
-      if (formatos.length) {
-        const d = new BD({ formats: formatos });
-        return { detectar: async (v) => (await d.detect(v)).map((x) => x.rawValue), formatos: formatos.includes("code_128") ? "QR o código de barras" : "QR" };
+      if (soportados.includes("qr_code") && soportados.includes("code_128")) {
+        const d = new BD({ formats: ["qr_code", "code_128"] });
+        return async (v) => (await d.detect(v)).map((x) => x.rawValue);
       }
-    } catch { /* se usa jsQR */ }
+    } catch { /* se usa el de respaldo */ }
   }
-  const { default: jsQR } = await import("jsqr");
-  return {
-    formatos: "QR",
-    detectar: async (v, c) => {
-      const ancho = Math.min(v.videoWidth, 960);
-      const alto = Math.round((v.videoHeight / v.videoWidth) * ancho);
-      if (!ancho || !alto) return [];
-      c.width = ancho; c.height = alto;
-      const ctx = c.getContext("2d", { willReadFrequently: true })!;
-      ctx.drawImage(v, 0, 0, ancho, alto);
-      const r = jsQR(ctx.getImageData(0, 0, ancho, alto).data, ancho, alto, { inversionAttempts: "dontInvert" });
-      return r ? [r.data] : [];
-    },
-  };
+  return detectorDeRespaldo();
 }
 
 export function Escanear({ alLeer, alCerrar }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const lienzo = useRef<HTMLCanvasElement>(null);
   const [estado, setEstado] = useState<"iniciando" | "mirando" | "sin cámara" | "sin permiso">("iniciando");
-  const [formatos, setFormatos] = useState("QR");
   const [aviso, setAviso] = useState<string | null>(null);
   const alLeerRef = useRef(alLeer);
   alLeerRef.current = alLeer;
@@ -58,7 +85,7 @@ export function Escanear({ alLeer, alCerrar }: Props) {
     let ultimo = "";
     (async () => {
       try {
-        flujo = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+        flujo = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: "environment" }, audio: false });
       } catch (e) {
         if (vivo) setEstado((e as DOMException).name === "NotAllowedError" ? "sin permiso" : "sin cámara");
         return;
@@ -67,13 +94,12 @@ export function Escanear({ alLeer, alCerrar }: Props) {
       const v = video.current!;
       v.srcObject = flujo;
       await v.play().catch(() => {});
-      const d = await crearDetector();
+      const detectar = await crearDetector();
       if (!vivo) return;
-      setFormatos(d.formatos);
       setEstado("mirando");
       while (vivo) {
         try {
-          for (const texto of await d.detectar(v, lienzo.current!)) {
+          for (const texto of await detectar(v, lienzo.current!)) {
             const c = leerCodigo(texto);
             if (!c) { if (texto !== ultimo) setAviso(`Leí «${texto.slice(0, 40)}», pero no es un código de DOCVAULT.`); ultimo = texto; continue; }
             if (alLeerRef.current(c)) { vivo = false; return; }
@@ -100,7 +126,7 @@ export function Escanear({ alLeer, alCerrar }: Props) {
         <div className="comparar-cabeza">
           <div>
             <h2>Escanear un documento</h2>
-            <p className="nota">Muestra a la cámara el {formatos} impreso en el documento o en su etiqueta.</p>
+            <p className="nota">Muestra a la cámara el QR o el código de barras impreso en el documento o en su etiqueta, a unos 20 o 30 cm y con luz. Si se ve borroso, aléjalo un poco.</p>
           </div>
           <button className="cerrar" onClick={alCerrar} aria-label="Cerrar el escáner">×</button>
         </div>
