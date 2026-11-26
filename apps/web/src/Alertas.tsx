@@ -14,12 +14,15 @@ interface Props {
   duplicados: Par[];
   alElegir: (id: string) => void;
   alIgnorar: (p: Par) => void;
+  alComparar: (p: Par) => void;
+  papelera: number;
+  alVerPapelera: () => void;
   alActivarAvisos: () => void;
 }
 
 const MAX = 6;
 
-export function Alertas({ docs, porId, duplicados, alElegir, alIgnorar, alActivarAvisos }: Props) {
+export function Alertas({ docs, porId, duplicados, alElegir, alIgnorar, alComparar, papelera, alVerPapelera, alActivarAvisos }: Props) {
   const hoy = hoyIso();
   const [todos, setTodos] = useState(false);
   const [todosDup, setTodosDup] = useState(false);
@@ -97,7 +100,10 @@ export function Alertas({ docs, porId, duplicados, alElegir, alIgnorar, alActiva
                       <button className="enlace" onClick={() => alElegir(b.id)}>{nombreDe(b.id)}</button>
                     </span>
                     <span className="meta">{explicarPar(p)}</span>
-                    <button className="ignorar" onClick={() => alIgnorar(p)}>No son duplicados</button>
+                    <span className="botones-dup">
+                      <button className="primario" onClick={() => alComparar(p)} aria-label={`Comparar ${nombreDe(a.id)} y ${nombreDe(b.id)}`}>Comparar</button>
+                      <button className="ignorar" onClick={() => alIgnorar(p)}>No son duplicados</button>
+                    </span>
                   </li>
                 );
               })}
@@ -106,6 +112,7 @@ export function Alertas({ docs, porId, duplicados, alElegir, alIgnorar, alActiva
         {duplicados.length > MAX && (
           <button className="enlace" onClick={() => setTodosDup(!todosDup)}>{todosDup ? "Ver menos" : `Ver los ${duplicados.length}`}</button>
         )}
+        {papelera > 0 && <button className="enlace papelera-enlace" onClick={alVerPapelera}>Papelera ({papelera})</button>}
       </div>
     </section>
   );

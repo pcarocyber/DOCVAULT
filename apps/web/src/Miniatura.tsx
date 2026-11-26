@@ -66,3 +66,33 @@ export function Miniatura({ raiz, doc }: { raiz: FileSystemDirectoryHandle; doc:
     </div>
   );
 }
+
+/** Una vista grande de cualquier archivo (también uno que todavía no está en la carpeta). */
+export function Previa({ obtener, tipo, clave }: { obtener: () => Promise<File>; tipo: string; clave: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(true);
+  useEffect(() => {
+    let vivo = true;
+    let hecho: string | null = null;
+    setUrl(null);
+    setCargando(true);
+    (async () => {
+      const f = await obtener();
+      if (f.size > MAX_BYTES) return null;
+      if (IMAGENES.has(tipo)) return URL.createObjectURL(f);
+      if (tipo === "pdf") {
+        const [img] = await pdfAImagenes(new Uint8Array(await f.arrayBuffer()), 1.2, 1);
+        return img ? URL.createObjectURL(img) : null;
+      }
+      return null;
+    })().catch(() => null).then((u) => { hecho = u; if (vivo) { setUrl(u); setCargando(false); } });
+    return () => { vivo = false; if (hecho) URL.revokeObjectURL(hecho); };
+    // Solo cuando cambia el archivo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clave]);
+  return (
+    <div className={`previa tipo-${tipo || "otro"}`}>
+      {url ? <img src={url} alt="" /> : <span className="icono-tipo">{cargando && (IMAGENES.has(tipo) || tipo === "pdf") ? "…" : (tipo || "archivo").toUpperCase().slice(0, 4)}</span>}
+    </div>
+  );
+}
