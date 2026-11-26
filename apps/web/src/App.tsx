@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { abrirEnPestana, estampar, sePuedeEstampar } from "./estampar";
 import { Indice, type EstadoVence, type FichaDocumento } from "@docvault/indice";
 import { duplicadosEnBoveda, leerCodigo, UMBRALES_DUPLICADOS, type Par } from "@docvault/core";
 import { Alertas } from "./Alertas";
@@ -208,19 +207,9 @@ export function App() {
   const onReabrir = async () => {
     if (carpeta && (await pedirPermiso(carpeta))) await abrir(carpeta, false);
   };
-  const onAbrirDocumento = async (ruta: string, codigo?: string | null, tipo?: string | null) => {
+  const onAbrirDocumento = async (ruta: string) => {
     if (!carpeta) return;
     try {
-      // PDF y fotos se abren con su código al pie: si se imprimen desde esa pestaña,
-      // salen con el QR y el código de barras. El archivo de la carpeta no cambia.
-      if (codigo && sePuedeEstampar(tipo)) {
-        const abierta = await abrirEnPestana(
-          async () => estampar(await archivoPorRuta(carpeta, ruta), tipo ?? "", codigo),
-          () => archivoPorRuta(carpeta, ruta),
-        );
-        if (!abierta) setError("Chrome bloqueó la pestaña nueva. Permite las ventanas emergentes de esta página.");
-        return;
-      }
       const f = await archivoPorRuta(carpeta, ruta);
       const url = URL.createObjectURL(f);
       window.open(url, "_blank", "noopener");
@@ -599,7 +588,7 @@ export function App() {
         <Ficha
           raiz={carpeta} doc={ficha}
           texto={() => indice.current?.texto(ficha.id) ?? ""}
-          alAbrir={() => onAbrirDocumento(ficha.id, ficha.codigo, ficha.tipo)}
+          alAbrir={() => onAbrirDocumento(ficha.id)}
           alCerrar={cerrarFicha}
           alCambiarVence={(v, e) => cambiarVence(ficha.id, v, e)}
         />

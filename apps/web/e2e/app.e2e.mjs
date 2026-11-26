@@ -480,7 +480,7 @@ try {
   await pagina.getByLabel("Buscar").press("Enter");
   await ficha.waitFor();
   assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoArr, "Enter en el buscador con un código abre su ficha");
-  const imprimir = ficha.getByRole("region", { name: "Imprimir con código" });
+  const imprimir = ficha.getByRole("region", { name: "Código en papel" });
   await imprimir.scrollIntoViewIfNeeded();
   await pagina.screenshot({ path: resolve(raiz, "e2e/captura-imprimir.png") });
   const [conCodigo] = await Promise.all([pagina.waitForEvent("download"), imprimir.getByRole("button", { name: "Descargar con código" }).click()]);
@@ -490,13 +490,12 @@ try {
   assert.deepEqual(pdfEstampado.getPage(0).getMediaBox(), { x: 0, y: -114, width: 612, height: 906 }, "la página se alarga para la franja");
   const rutaArr = await conCodigo.path();
   assert.equal(leerQrDePdf(rutaArr), codigoArr, "el QR impreso se puede leer");
-  // Imprimir: el PDF se carga en un marco invisible y se abre el cuadro de imprimir.
-  // Aquí se anotan esos marcos (y las pestañas nuevas) para revisar lo que se iba a imprimir.
+  assert.equal(await imprimir.getByRole("button", { name: "Imprimir con código" }).count(), 0, "ya no hay «Imprimir con código»");
+  await imprimir.getByText("Listo: el PDF con el código está en Descargas").waitFor();
+  // La etiqueta se abre en una pestaña nueva. Aquí se anota la pestaña (Chrome sin pantalla
+  // no muestra PDF) para revisar lo que iba a mostrar.
   await pagina.evaluate(() => {
     window.__pdfs = [];
-    new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => {
-      if (n.tagName === "IFRAME" && "imprimir" in n.dataset) window.__pdfs.push(n.src);
-    }))).observe(document.body, { childList: true });
     window.open = () => ({ document: { body: {} }, location: { set href(u) { window.__pdfs.push(u); } }, close() {} });
   });
   const ultimoPdf = async (n) => {
@@ -510,18 +509,7 @@ try {
   const et = await ultimoPdf(1);
   assert.deepEqual([et.pdf.getPage(0).getWidth(), et.pdf.getPage(0).getHeight()], [198, 85], "etiqueta de 7 × 3 cm");
   assert.equal(leerQrDePdf(et.ruta), codigoArr, "el QR de la etiqueta se puede leer");
-  await imprimir.getByRole("button", { name: "Imprimir con código" }).click();
-  const imp = await ultimoPdf(2);
-  assert.equal(imp.pdf.getPage(0).getHeight(), 906, "«Imprimir con código» imprime con la franja");
-  assert.equal(leerQrDePdf(imp.ruta), codigoArr);
-  // Cmd + P (Ctrl + P) con la ficha abierta también imprime con la franja, no la pantalla.
-  await pagina.keyboard.press("ControlOrMeta+p");
-  assert.equal((await ultimoPdf(3)).pdf.getPage(0).getHeight(), 906, "Cmd + P imprime con la franja");
-  // «Abrir documento» abre el PDF con su código: si se imprime desde esa pestaña, sale con la franja.
-  await ficha.getByRole("button", { name: "Abrir documento" }).click();
-  const abierto = await ultimoPdf(4);
-  assert.equal(abierto.pdf.getPage(0).getHeight(), 906, "«Abrir documento» muestra la franja");
-  assert.equal(leerQrDePdf(abierto.ruta), codigoArr);
+  await imprimir.getByText("La etiqueta (7 × 3 cm) se abrió en una pestaña nueva").waitFor();
   await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
 
   // Una foto también se descarga con código: queda en una hoja carta con la franja.
@@ -589,7 +577,7 @@ try {
   await ficha.waitFor();
   assert.equal((await ficha.locator(".codigo-grande").textContent()).trim(), codigoRecibo, "lector USB con teclado en español");
   await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
-  console.log("  Imprimir con código, etiqueta, lector USB y cámara: bien.");
+  console.log("  Descargar con código, etiqueta, lector USB y cámara: bien.");
 
   // Al recargar no hay nada nuevo que leer: lo subido ya quedó en el índice.
   // Un enlace con el código (#DV-000002) abre directamente la ficha de ese documento.

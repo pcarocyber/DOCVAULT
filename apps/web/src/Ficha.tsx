@@ -6,7 +6,7 @@ import { BarrasSvg, QrSvg } from "./Codigo";
 import { claseEtapa, dudoso, ESTADOS, fecha, nombreDe, tamano } from "./Documentos";
 import { Miniatura } from "./Miniatura";
 import { archivoPorRuta } from "./carpeta";
-import { abrirParaImprimir, descargar, estampar, etiqueta, imprimirAqui, nombreConCodigo, nombreSeguro, sePuedeEstampar } from "./estampar";
+import { abrirEnPestana, descargar, estampar, etiqueta, nombreConCodigo, sePuedeEstampar } from "./estampar";
 
 interface Props {
   raiz: FileSystemDirectoryHandle;
@@ -186,35 +186,22 @@ function Imprimir({ raiz, doc }: { raiz: FileSystemDirectoryHandle; doc: FichaDo
   };
   const conCodigo = async () => estampar(await archivoPorRuta(raiz, doc.id), doc.tipo ?? "", codigo);
   const puede = sePuedeEstampar(doc.tipo);
-  /** Abre el cuadro de imprimir de Chrome; si no se puede aquí, en una pestaña nueva. */
-  const imprimirPdf = async (bytes: Uint8Array, listo: string) => {
-    try { await imprimirAqui(bytes); setAviso(listo); }
-    catch {
-      if (abrirParaImprimir(bytes)) setAviso("Se abrió en una pestaña nueva: imprime desde ahí con Cmd + P.");
-      else setAviso("Chrome bloqueó la ventana nueva. Permite las ventanas emergentes de esta página o usa «Descargar con código».");
-    }
-  };
-  const imprimirConCodigo = () => hacer("imprimir", async () => imprimirPdf(await conCodigo(), "Listo: en el cuadro de imprimir verás la franja con el código al pie de la primera página."));
-  const imprimirEtiqueta = () => hacer("etiqueta", async () => imprimirPdf(await etiqueta(codigo, nombre), "Listo: la etiqueta mide 7 × 3 cm. Imprímela en tamaño real (100 %)."));
-  // Cmd + P (Ctrl + P) con la ficha abierta imprime el documento con su código, no la pantalla.
-  const atajo = useRef<() => void>(() => {});
-  atajo.current = puede ? imprimirConCodigo : imprimirEtiqueta;
-  useEffect(() => {
-    const tecla = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") { e.preventDefault(); atajo.current(); }
-    };
-    addEventListener("keydown", tecla);
-    return () => removeEventListener("keydown", tecla);
-  }, []);
+  const imprimirEtiqueta = () => hacer("etiqueta", async () => {
+    // La pestaña se abre al instante (para que Chrome no la bloquee) y recibe la etiqueta al estar lista.
+    if (await abrirEnPestana(() => etiqueta(codigo, nombre))) setAviso("La etiqueta (7 × 3 cm) se abrió en una pestaña nueva: imprímela con Cmd + P, en tamaño real (100 %), y pégala en el papel.");
+    else setAviso("Chrome bloqueó la pestaña nueva. Permite las ventanas emergentes de esta página.");
+  });
   return (
-    <section className="imprimir" aria-label="Imprimir con código">
-      <h3>Imprimir con código</h3>
+    <section className="imprimir" aria-label="Código en papel">
+      <h3>Código en papel</h3>
       {puede
-        ? <p className="nota">Al imprimir desde DOCVAULT, la primera página sale con una franja al pie: QR, código de barras y {codigo}. También al pulsar «Abrir documento» o Cmd + P aquí. Tu archivo original no cambia.</p>
+        ? <p className="nota">«Descargar con código» guarda un PDF con una franja al pie de la primera página: QR, código de barras y {codigo}. Imprime ese PDF. O imprime solo la etiqueta y pégala en el papel. Tu archivo original no cambia.</p>
         : <p className="nota">A los archivos {(doc.tipo || "sin extensión").toUpperCase()} no les puedo poner la franja. Imprime la etiqueta y pégala en el papel, o guárdalo como PDF y súbelo.</p>}
       <div className="acciones">
-        {puede && <button disabled={!!ocupado} onClick={imprimirConCodigo}>{ocupado === "imprimir" ? "Preparando…" : "Imprimir con código"}</button>}
-        {puede && <button disabled={!!ocupado} onClick={() => hacer("descargar", async () => descargar(await conCodigo(), nombreConCodigo(nombre, codigo)))}>{ocupado === "descargar" ? "Preparando…" : "Descargar con código"}</button>}
+        {puede && <button disabled={!!ocupado} onClick={() => hacer("descargar", async () => {
+          descargar(await conCodigo(), nombreConCodigo(nombre, codigo));
+          setAviso(`Listo: el PDF con el código está en Descargas (${nombreConCodigo(nombre, codigo)}). Ábrelo e imprímelo.`);
+        })}>{ocupado === "descargar" ? "Preparando…" : "Descargar con código"}</button>}
         <button disabled={!!ocupado} onClick={imprimirEtiqueta}>{ocupado === "etiqueta" ? "Preparando…" : "Imprimir etiqueta"}</button>
       </div>
       {aviso && <p className="nota" role="status">{aviso}</p>}

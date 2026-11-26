@@ -4,8 +4,7 @@ Fecha: 2026-11-26 · Aprobado por Pedro (el celular queda para la fase 2).
 
 ## Qué hace
 
-- **Descargar o imprimir con código.** En la ficha, «Descargar con código» e «Imprimir con código»
-  crean un PDF nuevo con una franja al pie de la primera página: QR, código de barras (Code 128)
+- **Descargar con código.** En la ficha, «Descargar con código» crea un PDF nuevo con una franja al pie de la primera página: QR, código de barras (Code 128)
   y el código escrito (DV-000123). El archivo original de la carpeta no cambia.
   - PDF: la primera página se alarga hacia abajo 114 pt (unos 4 cm). Así la franja **nunca tapa**
     el contenido. Las demás páginas llevan una línea pequeña «DV-000123 · página n de m».
@@ -45,6 +44,13 @@ Pedro pidió que el QR **y** el código de barras funcionen al escanear el papel
 - **Probado con fotos simuladas** del papel (30 y 45 cm, borrosa, torcida, poca luz, solo barras):
   en la Mac de Pedro, el lector de Chrome leyó 8 de 10. Fallan solo las muy borrosas y lejanas
   (con el QR de antes, la borrosa a 30 cm tampoco se leía).
+
+## Solo dos botones (26 de noviembre, a pedido de Pedro)
+
+«Imprimir con código» no le sacaba el código en papel, así que se quitó junto con los atajos que
+dependían de él (Cmd + P en la ficha y «Abrir documento» con la franja). Quedan dos acciones:
+**Descargar con código** (se imprime ese PDF) e **Imprimir etiqueta** (se abre en una pestaña nueva).
+«Abrir documento» vuelve a abrir el archivo original.
 
 ## Pruebas
 
