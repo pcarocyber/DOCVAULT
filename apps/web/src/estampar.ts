@@ -165,6 +165,53 @@ export function descargar(bytes: Uint8Array, nombre: string) {
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
+/**
+ * Abre el cuadro de imprimir de Chrome con este PDF, sin cambiar de pestaña:
+ * el PDF se carga en un marco invisible y se imprime desde ahí.
+ */
+export function imprimirAqui(bytes: Uint8Array): Promise<void> {
+  const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: "application/pdf" }));
+  const marco = document.createElement("iframe");
+  marco.title = "Documento para imprimir";
+  marco.setAttribute("aria-hidden", "true");
+  // Chrome no imprime un marco de tamaño cero: queda de 1 px y transparente.
+  marco.style.cssText = "position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none";
+  document.querySelector("iframe[data-imprimir]")?.remove();
+  marco.dataset.imprimir = "";
+  return new Promise((ok, mal) => {
+    // Si el visor de PDF no carga (por ejemplo, Chrome configurado para descargar los PDF), se avisa.
+    const espera = setTimeout(() => { marco.remove(); mal(new Error("el PDF no cargó para imprimir")); }, 10_000);
+    marco.onload = () => {
+      clearTimeout(espera);
+      // El visor de PDF termina de cargar un poco después del evento load.
+      setTimeout(() => {
+        try { marco.contentWindow!.focus(); marco.contentWindow!.print(); ok(); }
+        catch (e) { mal(e); }
+        setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+      }, 400);
+    };
+    marco.src = url;
+    document.body.append(marco);
+  });
+}
+
+/**
+ * Abre una pestaña nueva ya (antes de esperar nada, para que Chrome no la bloquee)
+ * y le pone el PDF cuando está listo. Si algo falla, abre `respaldo`.
+ */
+export async function abrirEnPestana(preparar: () => Promise<Uint8Array>, respaldo?: () => Promise<Blob>): Promise<boolean> {
+  const w = window.open("", "_blank");
+  if (!w) return false;
+  try { w.document.title = "Preparando…"; w.document.body.textContent = "Preparando el documento con su código…"; } catch { /* nada */ }
+  let blob: Blob;
+  try { blob = new Blob([(await preparar()) as Uint8Array<ArrayBuffer>], { type: "application/pdf" }); }
+  catch (e) { if (!respaldo) { w.close(); throw e; } blob = await respaldo(); }
+  const url = URL.createObjectURL(blob);
+  w.location.href = url;
+  setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+  return true;
+}
+
 /** Abre el PDF en una pestaña nueva, listo para imprimir (Cmd + P o el botón de imprimir de Chrome). */
 export function abrirParaImprimir(bytes: Uint8Array): boolean {
   const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: "application/pdf" }));

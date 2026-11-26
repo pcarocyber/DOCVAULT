@@ -486,17 +486,38 @@ try {
   assert.equal(pdfEstampado.getPageCount(), 1);
   assert.deepEqual(pdfEstampado.getPage(0).getMediaBox(), { x: 0, y: -90, width: 612, height: 882 }, "la página se alarga para la franja");
   assert.equal(leerQrDePdf(await conCodigo.path()), codigoArr, "el QR impreso se puede leer");
-  // Imprimir la etiqueta abre el PDF en otra pestaña. Aquí se anota la pestaña en vez de
-  // abrirla (Chrome sin pantalla no muestra PDF) y se revisa lo que iba a mostrar.
-  await pagina.evaluate(() => { window.__abiertas = []; window.open = (u) => { window.__abiertas.push(u); return {}; }; });
+  // Imprimir: el PDF se carga en un marco invisible y se abre el cuadro de imprimir.
+  // Aquí se anotan esos marcos (y las pestañas nuevas) para revisar lo que se iba a imprimir.
+  await pagina.evaluate(() => {
+    window.__pdfs = [];
+    new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => {
+      if (n.tagName === "IFRAME" && "imprimir" in n.dataset) window.__pdfs.push(n.src);
+    }))).observe(document.body, { childList: true });
+    window.open = () => ({ document: { body: {} }, location: { set href(u) { window.__pdfs.push(u); } }, close() {} });
+  });
+  const ultimoPdf = async (n) => {
+    await pagina.waitForFunction((n) => window.__pdfs.length >= n, n, { timeout: 10_000 });
+    const bytes = await pagina.evaluate(async (i) => [...new Uint8Array(await (await fetch(window.__pdfs[i])).arrayBuffer())], n - 1);
+    const ruta = resolve(mkdtempSync(resolve(tmpdir(), "dv-pdf-")), "impreso.pdf");
+    writeFileSync(ruta, Uint8Array.from(bytes));
+    return { ruta, pdf: await PDFDocument.load(readFileSync(ruta)) };
+  };
   await imprimir.getByRole("button", { name: "Imprimir etiqueta" }).click();
-  await imprimir.getByText("La etiqueta (7 × 3 cm) se abrió").waitFor();
-  const bytesEtiqueta = await pagina.evaluate(async () => [...new Uint8Array(await (await fetch(window.__abiertas[0])).arrayBuffer())]);
-  const rutaEtiqueta = resolve(mkdtempSync(resolve(tmpdir(), "dv-et-")), "etiqueta.pdf");
-  writeFileSync(rutaEtiqueta, Uint8Array.from(bytesEtiqueta));
-  const pdfEtiqueta = await PDFDocument.load(readFileSync(rutaEtiqueta));
-  assert.deepEqual([pdfEtiqueta.getPage(0).getWidth(), pdfEtiqueta.getPage(0).getHeight()], [198, 85], "etiqueta de 7 × 3 cm");
-  assert.equal(leerQrDePdf(rutaEtiqueta), codigoArr, "el QR de la etiqueta se puede leer");
+  const et = await ultimoPdf(1);
+  assert.deepEqual([et.pdf.getPage(0).getWidth(), et.pdf.getPage(0).getHeight()], [198, 85], "etiqueta de 7 × 3 cm");
+  assert.equal(leerQrDePdf(et.ruta), codigoArr, "el QR de la etiqueta se puede leer");
+  await imprimir.getByRole("button", { name: "Imprimir con código" }).click();
+  const imp = await ultimoPdf(2);
+  assert.equal(imp.pdf.getPage(0).getHeight(), 882, "«Imprimir con código» imprime con la franja");
+  assert.equal(leerQrDePdf(imp.ruta), codigoArr);
+  // Cmd + P (Ctrl + P) con la ficha abierta también imprime con la franja, no la pantalla.
+  await pagina.keyboard.press("ControlOrMeta+p");
+  assert.equal((await ultimoPdf(3)).pdf.getPage(0).getHeight(), 882, "Cmd + P imprime con la franja");
+  // «Abrir documento» abre el PDF con su código: si se imprime desde esa pestaña, sale con la franja.
+  await ficha.getByRole("button", { name: "Abrir documento" }).click();
+  const abierto = await ultimoPdf(4);
+  assert.equal(abierto.pdf.getPage(0).getHeight(), 882, "«Abrir documento» muestra la franja");
+  assert.equal(leerQrDePdf(abierto.ruta), codigoArr);
   await pagina.getByRole("button", { name: "Cerrar la ficha" }).click();
 
   // Una foto también se descarga con código: queda en una hoja carta con la franja.

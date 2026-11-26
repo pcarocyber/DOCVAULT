@@ -241,7 +241,7 @@ button.peligro:hover:not(:disabled) { border-color: var(--rojo); }
 .papelera .elegir button { font-size: 12px; padding: 4px 10px; }
 /* Entrega 5: imprimir con código y escanear */
 .icono { width: 16px; height: 16px; vertical-align: -3px; margin-right: 6px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.imprimir { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+.imprimir { margin: 12px 0 14px; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--card-2); }
 .imprimir h3 { margin: 0 0 4px; font-size: 15px; }
 .imprimir .acciones button { font-size: 13px; padding: 6px 11px; }
 .escanear { position: fixed; z-index: 10; top: 6vh; left: 50%; transform: translateX(-50%); width: min(560px, 94vw); max-height: 88vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--sombra-alta); padding: 18px 22px; animation: aparecer .2s; }
